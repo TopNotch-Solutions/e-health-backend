@@ -1,0 +1,32 @@
+'use strict';
+module.exports = (sequelize, DataTypes) => {
+  const Vital = sequelize.define('Vital', {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    visit_id: { type: DataTypes.CHAR(36), allowNull: false },
+    recorded_by: { type: DataTypes.CHAR(36), allowNull: false },
+    temperature: { type: DataTypes.DECIMAL(4, 1) },
+    blood_pressure_systolic: { type: DataTypes.INTEGER },
+    blood_pressure_diastolic: { type: DataTypes.INTEGER },
+    pulse_rate: { type: DataTypes.INTEGER },
+    respiratory_rate: { type: DataTypes.INTEGER },
+    weight: { type: DataTypes.DECIMAL(5, 2) },
+    height: { type: DataTypes.DECIMAL(5, 2) },
+    oxygen_saturation: { type: DataTypes.DECIMAL(4, 1) },
+    allergies: { type: DataTypes.TEXT },
+    accompanied_by: { type: DataTypes.STRING(200) },
+    chief_complaint: { type: DataTypes.TEXT },
+    notes: { type: DataTypes.TEXT },
+  }, {
+    tableName: 'vitals',
+    timestamps: true,
+    createdAt: 'recorded_at',
+    updatedAt: false,
+  });
+
+  Vital.associate = (models) => {
+    Vital.belongsTo(models.Visit, { foreignKey: 'visit_id', as: 'visit' });
+    Vital.belongsTo(models.User, { foreignKey: 'recorded_by', as: 'recordedBy' });
+  };
+
+  return Vital;
+};
