@@ -132,6 +132,81 @@ exports.emergencyRegister = async (req, res) => {
   }
 };
 
+function isProfileComplete(patient) {
+  const row = patient.toJSON ? patient.toJSON() : patient;
+  return Boolean(
+    row.first_name &&
+      row.last_name &&
+      row.sex &&
+      row.date_of_birth &&
+      row.id_number &&
+      row.phone &&
+      row.category !== 'unknown'
+  );
+}
+
+// Front office: national ID OR (date of birth + name)
+exports.search = async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const idNumber = (req.query.id_number || '').trim();
+    const dateOfBirth = (req.query.date_of_birth || '').trim();
+    const name = (req.query.name || '').trim();
+
+    if (!idNumber && !(dateOfBirth && name)) {
+      return error(
+        res,
+        'Provide either id_number, or both date_of_birth and name',
+        400
+      );
+    }
+
+    let where;
+
+    if (idNumber) {
+      where = { id_number: { [Op.like]: `%${idNumber}%` } };
+    } else {
+      const parts = name.split(/\s+/).filter(Boolean);
+      const conditions = [{ date_of_birth: dateOfBirth }];
+
+      if (parts.length >= 2) {
+        conditions.push(
+          { first_name: { [Op.like]: `%${parts[0]}%` } },
+          { last_name: { [Op.like]: `%${parts.slice(1).join(' ')}%` } }
+        );
+      } else {
+        conditions.push({
+          [Op.or]: [
+            { first_name: { [Op.like]: `%${name}%` } },
+            { last_name: { [Op.like]: `%${name}%` } },
+          ],
+        });
+      }
+
+      where = { [Op.and]: conditions };
+    }
+
+    const rows = await Patient.findAll({
+      where,
+      limit: 50,
+      order: [
+        ['last_name', 'ASC'],
+        ['first_name', 'ASC'],
+      ],
+    });
+
+    const patients = rows.map((p) => {
+      const json = p.toJSON();
+      return { ...json, profile_complete: isProfileComplete(p) };
+    });
+
+    return success(res, { patients, count: patients.length });
+  } catch (err) {
+    console.error('Patient search error:', err);
+    return error(res, 'Failed to search patients', 500);
+  }
+};
+
 // Search / list patients
 exports.getAll = async (req, res) => {
   try {
@@ -249,11 +324,20 @@ exports.createVisit = async (req, res) => {
       created_by: req.user.id,
     }, { transaction: t });
 
+    const { mode_of_arrival, accompanied_by } = req.body || {};
+    const intakeNotes = [
+      mode_of_arrival && `Mode of arrival: ${mode_of_arrival}`,
+      accompanied_by && `Accompanied by: ${accompanied_by}`,
+    ]
+      .filter(Boolean)
+      .join('; ');
+
     const queueEntry = await queueService.pushToQueue({
       visit_id: visit.id,
       department: 'nurse',
       priority: 'normal',
       pushed_by: req.user.id,
+      notes: intakeNotes || null,
     }, t);
 
     await t.commit();

@@ -19,7 +19,26 @@ app.set('io', io);
 // Middleware
 app.use(helmet());
 app.use(compression());
-app.use(cors({ origin: process.env.CORS_ORIGIN || ['http://localhost:3000', 'http://localhost:5173'], credentials: true }));
+const defaultDevOrigins = ['http://localhost:3000', 'http://localhost:5173'];
+const configuredOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+const corsOrigins = [...new Set([...defaultDevOrigins, ...configuredOrigins])];
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow non-browser clients; in dev allow listed SPA origins
+      if (!origin || corsOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS blocked origin: ${origin}`));
+      }
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));

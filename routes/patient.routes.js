@@ -12,6 +12,9 @@ router.post('/', authorize('patient', 'create'), auditMiddleware('patient'), pat
 // Emergency one-click registration
 router.post('/emergency', authorize('patient', 'create'), auditMiddleware('patient'), patientController.emergencyRegister);
 
+// Front office lookup (register before /:id and list)
+router.get('/search', authorize('patient', 'read'), patientController.search);
+
 // Search / list patients
 router.get('/', authorize('patient', 'read'), patientController.getAll);
 
