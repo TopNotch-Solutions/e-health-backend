@@ -91,12 +91,19 @@ const PORT = process.env.PORT || 5000;
 sequelize.authenticate()
   .then(() => {
     console.log('Database connected successfully');
+    
+    // Add this sync statement here:
+    // alter: true will safely update tables if they exist, or create them if they don't.
+    return sequelize.sync({ alter: true }); 
+  })
+  .then(() => {
+    console.log('All database tables synchronized successfully');
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error('Unable to connect to database:', err);
+    console.error('Unable to connect or sync database:', err);
   });
 
 module.exports = { app, server };
