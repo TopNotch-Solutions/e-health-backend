@@ -32,7 +32,7 @@ exports.login = async (req, res) => {
       where: { email },
       include: [{ model: Role, as: 'role' }],
     });
-
+    console.log('User found:', user ? user : 'No user');
     if (!user || !user.is_active) {
       return error(res, 'Invalid credentials', 401);
     }
