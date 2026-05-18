@@ -19,7 +19,7 @@ app.set('io', io);
 // Middleware
 app.use(helmet());
 app.use(compression());
-const defaultDevOrigins = ['http://localhost:3000', 'http://localhost:5173'];
+const defaultDevOrigins = ['http://localhost:3000', 'http://localhost:5173', 'https://health.kopanovertex.com'];
 const configuredOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map((o) => o.trim())
