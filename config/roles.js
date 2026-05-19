@@ -84,7 +84,7 @@ const ROLE_PERMISSIONS = {
     vitals: ['create', 'read', 'update', 'delete'],
     consultation: ['read'],
     lab_request: ['read', 'update'],
-    queue: ['read', 'push'],
+    queue: ['read', 'push', 'update'],
   },
   [ROLES.DOCTOR]: {
     patient: ['read'],
@@ -102,7 +102,7 @@ const ROLE_PERMISSIONS = {
     diet: ['create', 'read', 'update', 'delete'],
     inventory: ['read'],
     referral: ['create', 'read'],
-    queue: ['read', 'push'],
+    queue: ['read', 'push', 'update'],
   },
   [ROLES.PHARMACIST]: {
     patient: ['read'],

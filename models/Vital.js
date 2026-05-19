@@ -15,6 +15,13 @@ module.exports = (sequelize, DataTypes) => {
     allergies: { type: DataTypes.TEXT },
     accompanied_by: { type: DataTypes.STRING(200) },
     chief_complaint: { type: DataTypes.TEXT },
+    onset_at: { type: DataTypes.DATE },
+    aggravating_factors: { type: DataTypes.TEXT },
+    alleviating_factors: { type: DataTypes.TEXT },
+    current_medications: { type: DataTypes.TEXT },
+    immunization_status: { type: DataTypes.STRING(100) },
+    social_history: { type: DataTypes.TEXT },
+    physical_examination: { type: DataTypes.TEXT },
     notes: { type: DataTypes.TEXT },
   }, {
     tableName: 'vitals',

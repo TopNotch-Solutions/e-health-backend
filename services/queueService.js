@@ -1,12 +1,83 @@
 const { v4: uuidv4 } = require('uuid');
-const { QueueEntry, Visit, Patient, User, sequelize } = require('../models');
+const { QueueEntry, Visit, Patient, User, Vital, sequelize } = require('../models');
 const { Op } = require('sequelize');
+
+const ACTIVE_QUEUE_STATUSES = ['waiting', 'in_progress'];
+
+const DEPARTMENT_LABELS = {
+  nurse: 'nurse',
+  doctor: "doctor's",
+  pharmacy: 'pharmacy',
+  lab: 'lab',
+  sonar: 'sonar',
+  billing: 'billing',
+  transport: 'transport',
+};
+
+/**
+ * Active queue entry for this visit in a department (waiting or in progress).
+ */
+async function findActiveEntryForVisit(visitId, department, transaction = null) {
+  return QueueEntry.findOne({
+    where: {
+      visit_id: visitId,
+      department,
+      status: { [Op.in]: ACTIVE_QUEUE_STATUSES },
+    },
+    transaction,
+  });
+}
+
+/**
+ * Active queue entry for this patient in a department (any in-progress visit at facility).
+ */
+async function findActiveEntryForPatient(patientId, department, facilityId, transaction = null) {
+  return QueueEntry.findOne({
+    where: {
+      department,
+      status: { [Op.in]: ACTIVE_QUEUE_STATUSES },
+    },
+    include: [
+      {
+        association: 'visit',
+        where: {
+          patient_id: patientId,
+          facility_id: facilityId,
+          status: 'in_progress',
+        },
+        required: true,
+        attributes: ['id', 'patient_id', 'facility_id', 'visit_number'],
+      },
+    ],
+    transaction,
+  });
+}
 
 /**
  * Push a patient visit to a department queue.
+ * Skips duplicate visit+department rows; rejects if patient already queued in that department.
  * Emergency patients get position 0 (top of queue).
  */
 async function pushToQueue({ visit_id, department, priority = 'normal', pushed_by, notes = null }, transaction = null) {
+  const visit = await Visit.findByPk(visit_id, { transaction });
+  if (!visit) throw new Error('Visit not found');
+
+  const existingForVisit = await findActiveEntryForVisit(visit_id, department, transaction);
+  if (existingForVisit) {
+    return existingForVisit;
+  }
+
+  const existingForPatient = await findActiveEntryForPatient(
+    visit.patient_id,
+    department,
+    visit.facility_id,
+    transaction
+  );
+  if (existingForPatient) {
+    const label = DEPARTMENT_LABELS[department] || department;
+    throw new Error(`Patient is already in the ${label} queue`);
+  }
+
   // Get next position in queue for this department
   let position;
   if (priority === 'emergency') {
@@ -49,18 +120,41 @@ async function pushToQueue({ visit_id, department, priority = 'normal', pushed_b
  * Get current queue for a department with patient info.
  */
 async function getQueue(department, facilityId) {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
   const entries = await QueueEntry.findAll({
     where: {
       department,
-      status: { [Op.in]: ['waiting', 'in_progress'] },
+      [Op.or]: [
+        { status: { [Op.in]: ['waiting', 'in_progress'] } },
+        { status: 'completed', completed_at: { [Op.gte]: startOfDay } },
+      ],
     },
     include: [
       {
         association: 'visit',
         where: { facility_id: facilityId },
         include: [
-          { model: Patient, as: 'patient', attributes: ['id', 'first_name', 'last_name', 'patient_number', 'sex', 'category', 'payment_type', 'is_emergency', 'temp_id'] },
+          {
+            model: Patient,
+            as: 'patient',
+            attributes: [
+              'id', 'first_name', 'last_name', 'patient_number', 'sex', 'date_of_birth',
+              'category', 'payment_type', 'is_emergency', 'temp_id',
+            ],
+          },
+          {
+            model: Vital,
+            as: 'vitals',
+            required: false,
+          },
         ],
+      },
+      {
+        association: 'assignedTo',
+        attributes: ['id', 'first_name', 'last_name'],
+        required: false,
       },
     ],
     order: [
@@ -76,9 +170,29 @@ async function getQueue(department, facilityId) {
  * Start serving a patient (move from waiting to in_progress).
  */
 async function startEntry(entryId, userId) {
-  const entry = await QueueEntry.findByPk(entryId);
+  const entry = await QueueEntry.findByPk(entryId, {
+    include: [
+      {
+        association: 'visit',
+        include: [{ model: Patient, as: 'patient' }],
+      },
+      { association: 'assignedTo', attributes: ['id', 'first_name', 'last_name'], required: false },
+    ],
+  });
   if (!entry) throw new Error('Queue entry not found');
-  if (entry.status !== 'waiting') throw new Error('Patient is not in waiting state');
+
+  if (entry.status === 'in_progress') {
+    if (entry.assigned_to === userId) return entry;
+    const nurse = entry.assignedTo;
+    const name = nurse
+      ? [nurse.first_name, nurse.last_name].filter(Boolean).join(' ').trim()
+      : 'another nurse';
+    throw new Error(`Patient is locked by ${name || 'another nurse'}`);
+  }
+
+  if (entry.status !== 'waiting') {
+    throw new Error('Patient is not available in the queue');
+  }
 
   await entry.update({
     status: 'in_progress',
@@ -157,6 +271,8 @@ async function getQueueStats(department, facilityId) {
 
 module.exports = {
   pushToQueue,
+  findActiveEntryForVisit,
+  findActiveEntryForPatient,
   getQueue,
   startEntry,
   completeEntry,

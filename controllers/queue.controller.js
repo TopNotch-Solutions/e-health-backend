@@ -37,7 +37,8 @@ exports.push = async (req, res) => {
     return success(res, entry, 'Patient pushed to queue');
   } catch (err) {
     console.error('Push queue error:', err);
-    return error(res, err.message || 'Failed to push to queue', 500);
+    const status = err.message?.includes('already in the') ? 409 : 500;
+    return error(res, err.message || 'Failed to push to queue', status);
   }
 };
 

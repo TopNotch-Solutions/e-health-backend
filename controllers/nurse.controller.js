@@ -4,14 +4,28 @@ const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
 const { getIO } = require('../socket');
 
+const VITAL_FIELDS = [
+  'temperature', 'blood_pressure_systolic', 'blood_pressure_diastolic',
+  'pulse_rate', 'respiratory_rate', 'weight', 'height', 'oxygen_saturation',
+  'allergies', 'accompanied_by', 'chief_complaint', 'onset_at',
+  'aggravating_factors', 'alleviating_factors', 'current_medications',
+  'immunization_status', 'social_history', 'physical_examination', 'notes',
+];
+
+function pickVitalAttributes(body) {
+  const attrs = {};
+  for (const field of VITAL_FIELDS) {
+    if (body[field] !== undefined) {
+      attrs[field] = body[field] === '' ? null : body[field];
+    }
+  }
+  return attrs;
+}
+
 // Record vitals for a visit
 exports.create = async (req, res) => {
   try {
-    const {
-      visit_id, temperature, blood_pressure_systolic, blood_pressure_diastolic,
-      pulse_rate, respiratory_rate, weight, height, oxygen_saturation,
-      allergies, accompanied_by, chief_complaint, notes,
-    } = req.body;
+    const { visit_id } = req.body;
 
     if (!visit_id) return error(res, 'visit_id is required', 400);
 
@@ -22,18 +36,7 @@ exports.create = async (req, res) => {
       id: uuidv4(),
       visit_id,
       recorded_by: req.user.id,
-      temperature: temperature || null,
-      blood_pressure_systolic: blood_pressure_systolic || null,
-      blood_pressure_diastolic: blood_pressure_diastolic || null,
-      pulse_rate: pulse_rate || null,
-      respiratory_rate: respiratory_rate || null,
-      weight: weight || null,
-      height: height || null,
-      oxygen_saturation: oxygen_saturation || null,
-      allergies: allergies || null,
-      accompanied_by: accompanied_by || null,
-      chief_complaint: chief_complaint || null,
-      notes: notes || null,
+      ...pickVitalAttributes(req.body),
     });
 
     return created(res, vital, 'Vitals recorded');
@@ -46,36 +49,23 @@ exports.create = async (req, res) => {
 // Record vitals AND push patient to doctor queue in one action
 exports.createAndPush = async (req, res) => {
   try {
-    const {
-      visit_id, queue_entry_id, temperature, blood_pressure_systolic,
-      blood_pressure_diastolic, pulse_rate, respiratory_rate, weight,
-      height, oxygen_saturation, allergies, accompanied_by, chief_complaint, notes,
-    } = req.body;
+    const { visit_id, queue_entry_id } = req.body;
 
     if (!visit_id) return error(res, 'visit_id is required', 400);
 
     const visit = await Visit.findByPk(visit_id, {
-      include: [{ association: 'patient', attributes: ['id', 'first_name', 'last_name', 'patient_number'] }],
+      include: [{
+        association: 'patient',
+        attributes: ['id', 'first_name', 'last_name', 'patient_number', 'is_emergency'],
+      }],
     });
     if (!visit) return error(res, 'Visit not found', 404);
 
-    // Record vitals
     const vital = await Vital.create({
       id: uuidv4(),
       visit_id,
       recorded_by: req.user.id,
-      temperature: temperature || null,
-      blood_pressure_systolic: blood_pressure_systolic || null,
-      blood_pressure_diastolic: blood_pressure_diastolic || null,
-      pulse_rate: pulse_rate || null,
-      respiratory_rate: respiratory_rate || null,
-      weight: weight || null,
-      height: height || null,
-      oxygen_saturation: oxygen_saturation || null,
-      allergies: allergies || null,
-      accompanied_by: accompanied_by || null,
-      chief_complaint: chief_complaint || null,
-      notes: notes || null,
+      ...pickVitalAttributes(req.body),
     });
 
     // Complete nurse queue entry and push to doctor
@@ -83,7 +73,10 @@ exports.createAndPush = async (req, res) => {
     if (queue_entry_id) {
       const result = await queueService.completeEntry(queue_entry_id, {
         nextDepartment: 'doctor',
-        nextPriority: visit.visit_type === 'emergency' ? 'emergency' : 'normal',
+        nextPriority:
+          visit.visit_type === 'emergency' || visit.patient?.is_emergency
+            ? 'emergency'
+            : 'normal',
         pushed_by: req.user.id,
       });
       nextEntry = result.nextEntry;
@@ -129,16 +122,7 @@ exports.update = async (req, res) => {
     const vital = await Vital.findByPk(req.params.id);
     if (!vital) return error(res, 'Vitals not found', 404);
 
-    const allowedFields = [
-      'temperature', 'blood_pressure_systolic', 'blood_pressure_diastolic',
-      'pulse_rate', 'respiratory_rate', 'weight', 'height', 'oxygen_saturation',
-      'allergies', 'accompanied_by', 'chief_complaint', 'notes',
-    ];
-
-    const updates = {};
-    for (const field of allowedFields) {
-      if (req.body[field] !== undefined) updates[field] = req.body[field];
-    }
+    const updates = pickVitalAttributes(req.body);
 
     await vital.update(updates);
     return success(res, vital, 'Vitals updated');
