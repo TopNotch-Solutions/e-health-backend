@@ -94,7 +94,7 @@ sequelize.authenticate()
     
     // Add this sync statement here:
     // alter: true will safely update tables if they exist, or create them if they don't.
-    return sequelize.sync(); 
+    return sequelize.sync({ alter: true }); 
   })
   .then(() => {
     console.log('All database tables synchronized successfully');
