@@ -9,6 +9,7 @@ router.use(authenticate);
 // Consultations
 router.post('/', authorize('consultation', 'create'), auditMiddleware('consultation'), doctorController.createConsultation);
 router.get('/visit/:visitId', authorize('consultation', 'read'), doctorController.getByVisit);
+router.put('/:id', authorize('consultation', 'update'), auditMiddleware('consultation'), doctorController.updateConsultation);
 router.get('/:id', authorize('consultation', 'read'), doctorController.getById);
 
 // Prescriptions

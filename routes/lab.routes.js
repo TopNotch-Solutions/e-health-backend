@@ -6,6 +6,9 @@ const { auditMiddleware } = require('../middleware/audit');
 
 router.use(authenticate);
 
+// Hospital test catalog (ordering & results UI)
+router.get('/tests', authorize('lab_request', 'read'), labController.getTestCatalog);
+
 // Get lab queue
 router.get('/queue', authorize('lab_request', 'read'), labController.getQueue);
 

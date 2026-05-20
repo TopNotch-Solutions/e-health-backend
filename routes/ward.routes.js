@@ -12,11 +12,23 @@ router.get('/', authorize('ward', 'read'), wardController.getAll);
 // Get available beds (for doctor admitting)
 router.get('/beds/available', authorize('bed', 'read'), wardController.getAvailableBeds);
 
-// Get ward supervisor dashboard
-router.get('/:id/dashboard', authorize('ward', 'read'), wardController.getDashboard);
+// Ward staff arrival queue (must be before /:id routes)
+router.get('/staff-queue', authorize('admission', 'read'), wardController.getStaffQueue);
 
 // Get all current admissions
 router.get('/admissions', authorize('admission', 'read'), wardController.getAdmissions);
+
+router.get('/admissions/:id', authorize('admission', 'read'), wardController.getAdmissionById);
+
+router.put(
+  '/admissions/:id/confirm-arrival',
+  authorize('admission', 'update'),
+  auditMiddleware('admission'),
+  wardController.confirmArrival
+);
+
+// Get ward supervisor dashboard
+router.get('/:id/dashboard', authorize('ward', 'read'), wardController.getDashboard);
 
 // Create ward
 router.post('/', authorize('ward', 'create'), auditMiddleware('ward'), wardController.createWard);

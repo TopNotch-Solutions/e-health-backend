@@ -76,6 +76,7 @@ exports.complete = async (req, res) => {
     io.to(`room:${result.completedEntry.department}`).emit('queue:patient_moved', {
       entryId: result.completedEntry.id,
       status: 'completed',
+      department: result.completedEntry.department,
     });
 
     if (result.nextEntry) {

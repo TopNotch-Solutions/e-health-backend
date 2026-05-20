@@ -1,7 +1,28 @@
-const { TransportRequest, Visit, Patient, User } = require('../models');
+const { TransportRequest, Visit, Patient } = require('../models');
 const { Op } = require('sequelize');
 const { success, error } = require('../utils/response');
 const notificationService = require('../services/notificationService');
+const { getIO } = require('../socket');
+
+function priorityRank(p) {
+  if (p === 'emergency') return 0;
+  if (p === 'urgent') return 1;
+  return 2;
+}
+
+async function assertTransportInFacility(transportId, facilityId) {
+  const request = await TransportRequest.findByPk(transportId, {
+    include: [
+      {
+        association: 'visit',
+        where: { facility_id: facilityId },
+        attributes: ['id', 'facility_id'],
+        required: true,
+      },
+    ],
+  });
+  return request;
+}
 
 // Get transport queue (pending/in_transit)
 exports.getQueue = async (req, res) => {
@@ -14,13 +35,16 @@ exports.getQueue = async (req, res) => {
           where: { facility_id: req.user.facility_id },
           include: [{ model: Patient, as: 'patient', attributes: ['id', 'first_name', 'last_name', 'patient_number'] }],
         },
-        { association: 'porter', attributes: ['id', 'first_name', 'last_name'] },
+        { association: 'porter', attributes: ['id', 'first_name', 'last_name'], required: false },
         { association: 'requestedBy', attributes: ['id', 'first_name', 'last_name'] },
       ],
-      order: [
-        [require('sequelize').literal("FIELD(priority, 'emergency', 'urgent', 'normal')"), 'ASC'],
-        ['requested_at', 'ASC'],
-      ],
+      order: [['requested_at', 'ASC']],
+    });
+
+    requests.sort((a, b) => {
+      const pr = priorityRank(a.priority) - priorityRank(b.priority);
+      if (pr !== 0) return pr;
+      return new Date(a.requested_at).getTime() - new Date(b.requested_at).getTime();
     });
 
     return success(res, requests);
@@ -33,23 +57,29 @@ exports.getQueue = async (req, res) => {
 // Get single transport request
 exports.getById = async (req, res) => {
   try {
-    const request = await TransportRequest.findByPk(req.params.id, {
+    const request = await assertTransportInFacility(req.params.id, req.user.facility_id);
+    if (!request) return error(res, 'Transport request not found', 404);
+
+    const full = await TransportRequest.findByPk(req.params.id, {
       include: [
         { association: 'visit', include: [{ model: Patient, as: 'patient' }] },
-        { association: 'porter', attributes: ['id', 'first_name', 'last_name'] },
+        { association: 'porter', attributes: ['id', 'first_name', 'last_name'], required: false },
         { association: 'requestedBy', attributes: ['id', 'first_name', 'last_name'] },
       ],
     });
-    if (!request) return error(res, 'Transport request not found', 404);
-    return success(res, request);
+
+    return success(res, full);
   } catch (err) {
     return error(res, 'Failed to fetch transport request', 500);
   }
 };
 
-// Porter picks up (assign self and start transit)
+// Porter marks picked up (assign self and start transit)
 exports.start = async (req, res) => {
   try {
+    const scoped = await assertTransportInFacility(req.params.id, req.user.facility_id);
+    if (!scoped) return error(res, 'Transport request not found', 404);
+
     const request = await TransportRequest.findByPk(req.params.id);
     if (!request) return error(res, 'Transport request not found', 404);
     if (request.status !== 'pending') return error(res, 'Request is not pending', 400);
@@ -60,42 +90,61 @@ exports.start = async (req, res) => {
       started_at: new Date(),
     });
 
-    const io = require('../socket').getIO();
+    const refreshed = await TransportRequest.findByPk(req.params.id, {
+      include: [
+        { association: 'visit', include: [{ model: Patient, as: 'patient' }] },
+        { association: 'porter', attributes: ['id', 'first_name', 'last_name'], required: false },
+        { association: 'requestedBy', attributes: ['id', 'first_name', 'last_name'] },
+      ],
+    });
+
+    const io = getIO();
     io.to('room:porter').emit('transport:updated', {
       id: request.id,
       status: 'in_transit',
       assigned_porter: req.user.id,
     });
+    io.to('room:porter').emit('transport:queue_refresh', { reason: 'picked_up' });
 
-    return success(res, request, 'Transport started');
+    return success(res, refreshed, 'Marked as picked up — transport in progress');
   } catch (err) {
     return error(res, 'Failed to start transport', 500);
   }
 };
 
-// Porter completes transport
+// Porter marks delivered
 exports.complete = async (req, res) => {
   try {
+    const scoped = await assertTransportInFacility(req.params.id, req.user.facility_id);
+    if (!scoped) return error(res, 'Transport request not found', 404);
+
     const request = await TransportRequest.findByPk(req.params.id);
     if (!request) return error(res, 'Transport request not found', 404);
-    if (request.status !== 'in_transit') return error(res, 'Request is not in transit', 400);
+    if (request.status !== 'in_transit') return error(res, 'Patient must be picked up before marking delivered', 400);
 
     await request.update({
       status: 'completed',
       completed_at: new Date(),
     });
 
-    const io = require('../socket').getIO();
-    io.to('room:porter').emit('transport:completed', { id: request.id });
+    const refreshed = await TransportRequest.findByPk(req.params.id, {
+      include: [
+        { association: 'visit', include: [{ model: Patient, as: 'patient' }] },
+        { association: 'porter', attributes: ['id', 'first_name', 'last_name'], required: false },
+      ],
+    });
 
-    // Notify ward that patient has arrived
+    const io = getIO();
+    io.to('room:porter').emit('transport:completed', { id: request.id });
+    io.to('room:porter').emit('transport:queue_refresh', { reason: 'delivered' });
+
     notificationService.emitWardUpdate({
       type: 'patient_arrived',
       visit_id: request.visit_id,
       to_location: request.to_location,
     });
 
-    return success(res, request, 'Transport completed - patient delivered');
+    return success(res, refreshed, 'Marked as delivered');
   } catch (err) {
     return error(res, 'Failed to complete transport', 500);
   }
@@ -115,11 +164,11 @@ exports.getHistory = async (req, res) => {
           where: { facility_id: req.user.facility_id },
           include: [{ model: Patient, as: 'patient', attributes: ['id', 'first_name', 'last_name', 'patient_number'] }],
         },
-        { association: 'porter', attributes: ['id', 'first_name', 'last_name'] },
+        { association: 'porter', attributes: ['id', 'first_name', 'last_name'], required: false },
       ],
       order: [['completed_at', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+      limit: parseInt(limit, 10),
+      offset: parseInt(offset, 10),
     });
 
     return success(res, requests);

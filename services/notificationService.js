@@ -61,6 +61,20 @@ function emitWardUpdate(data) {
 }
 
 /**
+ * Notify ward staff of a new pending arrival (doctor admit).
+ */
+function emitWardStaffAdmission(data) {
+  const io = getIO();
+  io.to('room:ward_staff').emit('ward:new_admission', data);
+  emitWardStaffQueueRefresh({ reason: 'new_admission' });
+}
+
+function emitWardStaffQueueRefresh(data = {}) {
+  const io = getIO();
+  io.to('room:ward_staff').emit('ward:admission_refresh', data);
+}
+
+/**
  * Emit kitchen order.
  */
 function emitKitchenOrder(data) {
@@ -85,6 +99,8 @@ module.exports = {
   emitDashboardStats,
   emitTransportRequest,
   emitWardUpdate,
+  emitWardStaffAdmission,
+  emitWardStaffQueueRefresh,
   emitKitchenOrder,
   emitBillingCharge,
 };

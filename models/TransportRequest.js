@@ -7,6 +7,9 @@ module.exports = (sequelize, DataTypes) => {
     to_location: { type: DataTypes.STRING(100), allowNull: false },
     equipment_required: { type: DataTypes.ENUM('wheelchair', 'stretcher', 'bed', 'walking', 'other'), allowNull: false },
     equipment_notes: { type: DataTypes.STRING(255) },
+    critical_notes: { type: DataTypes.TEXT },
+    /** Doctor-selected checklist at admit: [{ id, label }] or [{ id, label, checked }] */
+    equipment_checklist: { type: DataTypes.JSON },
     priority: { type: DataTypes.ENUM('normal', 'urgent', 'emergency'), defaultValue: 'normal' },
     status: { type: DataTypes.ENUM('pending', 'in_transit', 'completed'), defaultValue: 'pending' },
     assigned_porter: { type: DataTypes.CHAR(36) },

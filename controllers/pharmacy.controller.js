@@ -43,7 +43,6 @@ exports.getPrescription = async (req, res) => {
           include: [{ model: Patient, as: 'patient' }],
         },
         { association: 'prescribedBy', attributes: ['id', 'first_name', 'last_name'] },
-        { association: 'consultation' },
       ],
     });
 
@@ -75,16 +74,18 @@ exports.dispense = async (req, res) => {
     }
 
     let dispensedCount = 0;
-    let unavailableCount = 0;
 
     for (const dispenseInfo of dispensed_items) {
       const item = prescription.items.find(i => i.id === dispenseInfo.item_id);
       if (!item) continue;
+      // Already fully handled (given or recorded as not given)
+      if (item.dispensed_at) continue;
 
       if (dispenseInfo.is_dispensed) {
-        // Mark as dispensed and deduct stock
+        // Available and given to patient — deduct stock
         await PrescriptionItem.update({
           is_dispensed: true,
+          is_available: true,
           dispensed_by: req.user.id,
           dispensed_at: new Date(),
         }, { where: { id: item.id }, transaction: t });
@@ -124,23 +125,33 @@ exports.dispense = async (req, res) => {
 
         dispensedCount++;
       } else {
-        // Mark as unavailable
+        // Not available / not given — pharmacist reviewed, no stock handed out
         await PrescriptionItem.update({
           is_available: false,
           is_dispensed: false,
+          dispensed_by: req.user.id,
+          dispensed_at: new Date(),
         }, { where: { id: item.id }, transaction: t });
-        unavailableCount++;
       }
     }
 
-    // Update prescription status
-    const totalItems = prescription.items.length;
+    // Derive status from persisted line items (supports multi-step dispensing)
+    const freshItems = await PrescriptionItem.findAll({
+      where: { prescription_id: id },
+      transaction: t,
+    });
+    const n = freshItems.length;
+    const dispensedTotal = freshItems.filter((i) => i.is_dispensed).length;
+    const reviewedTotal = freshItems.filter((i) => i.dispensed_at).length;
+
     let newStatus;
-    if (dispensedCount === totalItems) {
+    if (n === 0) {
+      newStatus = prescription.status;
+    } else if (reviewedTotal < n) {
+      newStatus = dispensedTotal > 0 ? 'partially_dispensed' : 'pending';
+    } else if (dispensedTotal === n) {
       newStatus = 'dispensed';
-    } else if (dispensedCount > 0 && unavailableCount > 0) {
-      newStatus = 'partially_dispensed';
-    } else if (unavailableCount === totalItems) {
+    } else if (dispensedTotal === 0) {
       newStatus = 'unavailable';
     } else {
       newStatus = 'partially_dispensed';
@@ -153,8 +164,9 @@ exports.dispense = async (req, res) => {
     return success(res, {
       prescription_id: id,
       status: newStatus,
-      dispensed: dispensedCount,
-      unavailable: unavailableCount,
+      dispensed: dispensedTotal,
+      unavailable: freshItems.filter((i) => !i.is_available && !i.is_dispensed).length,
+      applied_in_request: dispensedCount,
     }, 'Medications dispensed');
   } catch (err) {
     await t.rollback();

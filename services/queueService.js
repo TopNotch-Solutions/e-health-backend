@@ -74,8 +74,20 @@ async function pushToQueue({ visit_id, department, priority = 'normal', pushed_b
     transaction
   );
   if (existingForPatient) {
-    const label = DEPARTMENT_LABELS[department] || department;
-    throw new Error(`Patient is already in the ${label} queue`);
+    if (existingForPatient.visit_id === visit_id) {
+      return existingForPatient;
+    }
+    // Stale queue row from another visit — close it so the current visit can proceed
+    await existingForPatient.update(
+      {
+        status: 'completed',
+        completed_at: new Date(),
+        notes: existingForPatient.notes
+          ? `${existingForPatient.notes} (auto-closed: new visit queued)`
+          : 'Auto-closed: patient queued on a new visit',
+      },
+      { transaction }
+    );
   }
 
   // Get next position in queue for this department
@@ -120,16 +132,10 @@ async function pushToQueue({ visit_id, department, priority = 'normal', pushed_b
  * Get current queue for a department with patient info.
  */
 async function getQueue(department, facilityId) {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-
   const entries = await QueueEntry.findAll({
     where: {
       department,
-      [Op.or]: [
-        { status: { [Op.in]: ['waiting', 'in_progress'] } },
-        { status: 'completed', completed_at: { [Op.gte]: startOfDay } },
-      ],
+      status: { [Op.in]: ACTIVE_QUEUE_STATUSES },
     },
     include: [
       {

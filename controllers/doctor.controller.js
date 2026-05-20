@@ -1,11 +1,13 @@
+const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
 const {
-  Consultation, Prescription, PrescriptionItem, Visit, Patient,
+  Consultation, Prescription, PrescriptionItem, Visit, Patient, QueueEntry,
   LabRequest, SonarRequest, Admission, Bed, Ward, TransportRequest,
   DietPrescription, MealPlan, PharmacyInventory, Bill, BillItem,
   Referral, sequelize,
 } = require('../models');
 const { success, created, error } = require('../utils/response');
+const { ADMIT_TRANSPORT_CHECKLIST_OPTIONS } = require('../constants/admitTransportChecklist');
 const queueService = require('../services/queueService');
 const notificationService = require('../services/notificationService');
 const { getIO } = require('../socket');
@@ -35,40 +37,63 @@ exports.createConsultation = async (req, res) => {
   }
 };
 
-// Create prescription (with stock alert)
-exports.createPrescription = async (req, res) => {
-  const t = await sequelize.transaction();
+exports.updateConsultation = async (req, res) => {
   try {
-    const { visit_id, consultation_id, items } = req.body;
-    if (!visit_id || !consultation_id || !items || !items.length) {
-      return error(res, 'visit_id, consultation_id, and items are required', 400);
-    }
+    const consultation = await Consultation.findByPk(req.params.id);
+    if (!consultation) return error(res, 'Consultation not found', 404);
 
-    const prescription = await Prescription.create({
+    const { diagnosis, notes, actions_taken } = req.body;
+    await consultation.update({
+      ...(diagnosis !== undefined ? { diagnosis } : {}),
+      ...(notes !== undefined ? { notes } : {}),
+      ...(actions_taken !== undefined ? { actions_taken } : {}),
+    });
+
+    return success(res, consultation, 'Consultation updated');
+  } catch (err) {
+    console.error('Update consultation error:', err);
+    return error(res, 'Failed to update consultation', 500);
+  }
+};
+
+/**
+ * Persists prescription + line items and stock flags (no queue changes).
+ */
+async function createPrescriptionWithItems({
+  visit_id,
+  consultation_id,
+  items,
+  prescribed_by,
+  facility_id,
+  transaction,
+}) {
+  const prescription = await Prescription.create(
+    {
       id: uuidv4(),
       consultation_id,
       visit_id,
-      prescribed_by: req.user.id,
-    }, { transaction: t });
+      prescribed_by,
+    },
+    { transaction }
+  );
 
-    // Create prescription items and check stock
-    const lowStockAlerts = [];
-    const prescriptionItems = [];
+  const lowStockAlerts = [];
+  const prescriptionItems = [];
 
-    for (const item of items) {
-      // Check stock level
-      const stockItem = await PharmacyInventory.findOne({
-        where: {
-          medication_name: item.medication_name,
-          facility_id: req.user.facility_id,
-        },
-        transaction: t,
-      });
+  for (const item of items) {
+    const stockItem = await PharmacyInventory.findOne({
+      where: {
+        medication_name: item.medication_name,
+        facility_id,
+      },
+      transaction,
+    });
 
-      const stockLevel = stockItem ? stockItem.quantity_in_stock : 0;
-      const isLowStock = stockLevel < (item.quantity || 1);
+    const stockLevel = stockItem ? stockItem.quantity_in_stock : 0;
+    const isLowStock = stockLevel < (item.quantity || 1);
 
-      const prescItem = await PrescriptionItem.create({
+    const prescItem = await PrescriptionItem.create(
+      {
         id: uuidv4(),
         prescription_id: prescription.id,
         medication_name: item.medication_name,
@@ -79,86 +104,383 @@ exports.createPrescription = async (req, res) => {
         instructions: item.instructions || null,
         stock_at_prescribe: stockLevel,
         is_available: !isLowStock,
-      }, { transaction: t });
+      },
+      { transaction }
+    );
 
-      prescriptionItems.push(prescItem);
+    prescriptionItems.push(prescItem);
 
-      if (isLowStock) {
-        lowStockAlerts.push({
-          medication_name: item.medication_name,
-          prescribed_qty: item.quantity,
-          stock_available: stockLevel,
-        });
-      }
+    if (isLowStock) {
+      lowStockAlerts.push({
+        medication_name: item.medication_name,
+        prescribed_qty: item.quantity,
+        stock_available: stockLevel,
+      });
+    }
+  }
+
+  const lowStockNote =
+    lowStockAlerts.length > 0
+      ? `Low stock alert: ${lowStockAlerts.map((a) => a.medication_name).join(', ')}`
+      : null;
+
+  return { prescription, prescriptionItems, lowStockAlerts, lowStockNote };
+}
+
+// Create prescription (with stock alert)
+exports.createPrescription = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { visit_id, consultation_id, items, queue_entry_id } = req.body;
+    if (!visit_id || !consultation_id || !items || !items.length) {
+      return error(res, 'visit_id, consultation_id, and items are required', 400);
     }
 
-    // Push to pharmacy queue
-    const queueEntry = await queueService.pushToQueue({
-      visit_id,
-      department: 'pharmacy',
-      priority: 'normal',
-      pushed_by: req.user.id,
-      notes: lowStockAlerts.length > 0 ? `Low stock alert: ${lowStockAlerts.map(a => a.medication_name).join(', ')}` : null,
-    }, t);
+    const visit = await Visit.findByPk(visit_id, {
+      include: [{ model: Patient, as: 'patient', attributes: ['is_emergency'] }],
+      transaction: t,
+    });
+    if (!visit) {
+      await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const priority = visit.patient?.is_emergency ? 'emergency' : 'normal';
+
+    const consultation = await Consultation.findByPk(consultation_id, { transaction: t });
+    if (!consultation) {
+      await t.rollback();
+      return error(res, 'Consultation not found. Complete diagnosis and try again.', 404);
+    }
+    if (consultation.visit_id !== visit_id) {
+      await t.rollback();
+      return error(res, 'Consultation does not belong to this visit', 400);
+    }
+
+    const { prescription, prescriptionItems, lowStockAlerts, lowStockNote } =
+      await createPrescriptionWithItems({
+        visit_id,
+        consultation_id,
+        items,
+        prescribed_by: req.user.id,
+        facility_id: req.user.facility_id,
+        transaction: t,
+      });
+
+    // Complete doctor consultation queue entry and hand off to pharmacy (single transaction)
+    let queueResult = { completedEntry: null, nextEntry: null };
+    let doctorEntry = await queueService.findActiveEntryForVisit(visit_id, 'doctor', t);
+    if (!doctorEntry && queue_entry_id) {
+      doctorEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+    }
+
+    const activeDoctorEntry =
+      doctorEntry &&
+      doctorEntry.department === 'doctor' &&
+      ['waiting', 'in_progress'].includes(doctorEntry.status)
+        ? doctorEntry
+        : null;
+
+    try {
+      if (activeDoctorEntry) {
+        queueResult = await queueService.completeEntry(
+          activeDoctorEntry.id,
+          {
+            nextDepartment: 'pharmacy',
+            nextPriority: priority,
+            notes: lowStockNote,
+            pushed_by: req.user.id,
+          },
+          t
+        );
+      } else {
+        queueResult.nextEntry = await queueService.pushToQueue(
+          {
+            visit_id,
+            department: 'pharmacy',
+            priority,
+            pushed_by: req.user.id,
+            notes: lowStockNote,
+          },
+          t
+        );
+      }
+    } catch (queueErr) {
+      await t.rollback();
+      const msg = queueErr.message || 'Failed to update patient queue';
+      const status = msg.includes('already in the') ? 409 : 400;
+      return error(res, msg, status);
+    }
 
     await t.commit();
 
-    // Emit stock alerts if any
-    if (lowStockAlerts.length > 0) {
-      notificationService.emitStockAlert({
-        prescription_id: prescription.id,
-        visit_id,
-        alerts: lowStockAlerts,
-        doctor: `${req.user.first_name} ${req.user.last_name}`,
-      });
+    try {
+      if (lowStockAlerts.length > 0) {
+        notificationService.emitStockAlert({
+          prescription_id: prescription.id,
+          visit_id,
+          alerts: lowStockAlerts,
+          doctor: `${req.user.first_name} ${req.user.last_name}`,
+        });
+      }
+      const io = getIO();
+      if (queueResult.completedEntry) {
+        io.to('room:doctor').emit('queue:patient_moved', {
+          entryId: queueResult.completedEntry.id,
+          status: 'completed',
+        });
+      }
+      if (queueResult.nextEntry) {
+        io.to('room:pharmacy').emit('queue:new_patient', { queueEntry: queueResult.nextEntry });
+        io.to('room:pharmacist').emit('queue:new_patient', { queueEntry: queueResult.nextEntry });
+      }
+    } catch (emitErr) {
+      console.error('Post-prescription notification error:', emitErr.message);
     }
 
-    // Notify pharmacy
-    const io = getIO();
-    io.to('room:pharmacist').emit('queue:new_patient', { queueEntry });
-
-    return created(res, { prescription, items: prescriptionItems, queueEntry, lowStockAlerts }, 'Prescription created');
+    return created(
+      res,
+      {
+        prescription,
+        items: prescriptionItems,
+        queueEntry: queueResult.nextEntry,
+        doctorQueueCompleted: Boolean(queueResult.completedEntry),
+        lowStockAlerts,
+      },
+      'Prescription sent to pharmacy — consultation completed'
+    );
   } catch (err) {
     await t.rollback();
     console.error('Create prescription error:', err);
-    return error(res, 'Failed to create prescription', 500);
+    const message =
+      err.message ||
+      err.parent?.sqlMessage ||
+      err.original?.sqlMessage ||
+      'Failed to create prescription';
+    const status = message.includes('already in the') ? 409 : 500;
+    return error(res, message, status);
   }
 };
 
-// Request lab work
-exports.createLabRequest = async (req, res) => {
+// Send patient to laboratory (batch tests + optional emergency).
+// Optional `items` + `consultation_id`: also create prescription and queue for pharmacy (same visit).
+exports.createLabOrder = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
-    const { visit_id, test_type, clinical_notes } = req.body;
-    if (!visit_id || !test_type) return error(res, 'visit_id and test_type are required', 400);
-
-    const labRequest = await LabRequest.create({
-      id: uuidv4(),
+    const {
       visit_id,
-      requested_by: req.user.id,
-      test_type,
-      clinical_notes: clinical_notes || null,
-      status: 'pending_sample',
+      queue_entry_id,
+      tests,
+      clinical_notes,
+      is_emergency,
+      items: prescriptionItemsBody,
+      consultation_id,
+    } = req.body;
+
+    if (!visit_id || !tests || !Array.isArray(tests) || tests.length === 0) {
+      await t.rollback();
+      return error(res, 'visit_id and tests array are required', 400);
+    }
+
+    const hasPrescriptionBundle =
+      Array.isArray(prescriptionItemsBody) && prescriptionItemsBody.length > 0;
+    if (hasPrescriptionBundle && !consultation_id) {
+      await t.rollback();
+      return error(res, 'consultation_id is required when prescription items are sent with a lab order', 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, {
+      include: [{ model: Patient, as: 'patient', attributes: ['id', 'is_emergency'] }],
+      transaction: t,
     });
+    if (!visit) {
+      await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
 
-    // Push to lab queue
-    const queueEntry = await queueService.pushToQueue({
-      visit_id,
-      department: 'lab',
-      priority: 'normal',
-      pushed_by: req.user.id,
-      notes: `Lab request: ${test_type}`,
-    });
+    if (hasPrescriptionBundle) {
+      const consultation = await Consultation.findByPk(consultation_id, { transaction: t });
+      if (!consultation) {
+        await t.rollback();
+        return error(res, 'Consultation not found. Complete diagnosis and try again.', 404);
+      }
+      if (consultation.visit_id !== visit_id) {
+        await t.rollback();
+        return error(res, 'Consultation does not belong to this visit', 400);
+      }
+    }
 
-    const io = getIO();
-    io.to('room:lab_technician').emit('queue:new_patient', { queueEntry, labRequest });
-    io.to('room:nurse').emit('queue:new_patient', { queueEntry, labRequest, message: 'Blood sample needed' });
+    const emergency =
+      Boolean(is_emergency) || Boolean(visit.patient?.is_emergency);
+    const testLabels = tests.map((x) => x.name || x.id).filter(Boolean);
+    const test_type =
+      testLabels.length <= 2
+        ? testLabels.join(', ')
+        : `${testLabels.slice(0, 2).join(', ')} +${testLabels.length - 2} more`;
 
-    return created(res, { labRequest, queueEntry }, 'Lab request created');
+    const labRequest = await LabRequest.create(
+      {
+        id: uuidv4(),
+        visit_id,
+        requested_by: req.user.id,
+        test_type: test_type || 'Laboratory panel',
+        clinical_notes: clinical_notes || null,
+        tests,
+        is_emergency: emergency,
+        status: 'pending_sample',
+      },
+      { transaction: t }
+    );
+
+    let queueResult = { completedEntry: null, nextEntry: null };
+
+    if (queue_entry_id) {
+      const doctorEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+      if (
+        doctorEntry &&
+        doctorEntry.visit_id === visit_id &&
+        doctorEntry.department === 'doctor' &&
+        ['waiting', 'in_progress'].includes(doctorEntry.status)
+      ) {
+        queueResult = await queueService.completeEntry(
+          queue_entry_id,
+          {
+            nextDepartment: 'lab',
+            nextPriority: emergency ? 'emergency' : 'normal',
+            notes: `Laboratory: ${test_type}`,
+            pushed_by: req.user.id,
+          },
+          t
+        );
+      } else {
+        queueResult.nextEntry = await queueService.pushToQueue(
+          {
+            visit_id,
+            department: 'lab',
+            priority: emergency ? 'emergency' : 'normal',
+            pushed_by: req.user.id,
+            notes: `Laboratory: ${test_type}`,
+          },
+          t
+        );
+      }
+    } else {
+      queueResult.nextEntry = await queueService.pushToQueue(
+        {
+          visit_id,
+          department: 'lab',
+          priority: emergency ? 'emergency' : 'normal',
+          pushed_by: req.user.id,
+          notes: `Laboratory: ${test_type}`,
+        },
+        t
+      );
+    }
+
+    if (queueResult.nextEntry) {
+      await labRequest.update({ queue_entry_id: queueResult.nextEntry.id }, { transaction: t });
+    }
+
+    let prescription = null;
+    let prescriptionItems = [];
+    let lowStockAlerts = [];
+    let pharmacyQueueEntry = null;
+
+    if (hasPrescriptionBundle) {
+      const bundle = await createPrescriptionWithItems({
+        visit_id,
+        consultation_id,
+        items: prescriptionItemsBody,
+        prescribed_by: req.user.id,
+        facility_id: req.user.facility_id,
+        transaction: t,
+      });
+      prescription = bundle.prescription;
+      prescriptionItems = bundle.prescriptionItems;
+      lowStockAlerts = bundle.lowStockAlerts;
+
+      const pharmacyPriority = visit.patient?.is_emergency ? 'emergency' : 'normal';
+      const pharmacyNotes = [bundle.lowStockNote, 'Queued with laboratory order'].filter(Boolean).join(' · ');
+
+      pharmacyQueueEntry = await queueService.pushToQueue(
+        {
+          visit_id,
+          department: 'pharmacy',
+          priority: pharmacyPriority,
+          pushed_by: req.user.id,
+          notes: pharmacyNotes || null,
+        },
+        t
+      );
+    }
+
+    await t.commit();
+
+    try {
+      const io = getIO();
+      if (queueResult.completedEntry) {
+        io.to('room:doctor').emit('queue:patient_moved', {
+          entryId: queueResult.completedEntry.id,
+          status: 'completed',
+          department: 'doctor',
+        });
+        const doctorEntries = await queueService.getQueue('doctor', req.user.facility_id);
+        io.to('room:doctor').emit('queue:refresh', { department: 'doctor', entries: doctorEntries });
+      }
+      if (queueResult.nextEntry) {
+        io.to('room:lab_technician').emit('queue:new_patient', {
+          queueEntry: queueResult.nextEntry,
+          labRequest,
+        });
+        const labQueue = await LabRequest.findAll({
+          where: { status: { [Op.in]: ['pending_sample', 'sample_collected', 'processing'] } },
+          include: [{ association: 'visit', where: { facility_id: req.user.facility_id }, attributes: ['id'] }],
+        });
+        io.to('room:lab_technician').emit('queue:refresh', { department: 'lab', entries: labQueue });
+      }
+      if (lowStockAlerts.length > 0) {
+        notificationService.emitStockAlert({
+          prescription_id: prescription.id,
+          visit_id,
+          alerts: lowStockAlerts,
+          doctor: `${req.user.first_name} ${req.user.last_name}`,
+        });
+      }
+      if (pharmacyQueueEntry) {
+        io.to('room:pharmacy').emit('queue:new_patient', { queueEntry: pharmacyQueueEntry });
+        io.to('room:pharmacist').emit('queue:new_patient', { queueEntry: pharmacyQueueEntry });
+      }
+    } catch (emitErr) {
+      console.error('Lab order socket emit error:', emitErr.message);
+    }
+
+    const message = hasPrescriptionBundle
+      ? 'Patient sent to laboratory and prescription queued for pharmacy'
+      : 'Patient sent to laboratory';
+
+    return created(
+      res,
+      {
+        labRequest,
+        queueEntry: queueResult.nextEntry,
+        doctorQueueCompleted: Boolean(queueResult.completedEntry),
+        prescription,
+        prescriptionItems,
+        pharmacyQueueEntry,
+        lowStockAlerts,
+      },
+      message
+    );
   } catch (err) {
-    console.error('Create lab request error:', err);
-    return error(res, 'Failed to create lab request', 500);
+    await t.rollback();
+    console.error('Create lab order error:', err);
+    const message = err.message || 'Failed to send to laboratory';
+    const status = message.includes('already in the') ? 409 : 500;
+    return error(res, message, status);
   }
 };
+
+exports.createLabRequest = exports.createLabOrder;
 
 // Request sonar
 exports.createSonarRequest = async (req, res) => {
@@ -196,13 +518,42 @@ exports.createSonarRequest = async (req, res) => {
 exports.admitPatient = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const { visit_id, bed_id, equipment_required, equipment_notes, ward_id } = req.body;
-    if (!visit_id || !bed_id) return error(res, 'visit_id and bed_id are required', 400);
+    const {
+      visit_id,
+      bed_id,
+      equipment_required,
+      equipment_notes,
+      ward_id,
+      critical_notes,
+      equipment_checklist,
+    } = req.body;
+    if (!visit_id || !bed_id) {
+      await t.rollback();
+      return error(res, 'visit_id and bed_id are required', 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, {
+      include: [{ model: Patient, as: 'patient', attributes: ['id', 'is_emergency'] }],
+      transaction: t,
+    });
+    if (!visit) {
+      await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const transportPriority =
+      visit.patient?.is_emergency || visit.visit_type === 'emergency' ? 'emergency' : 'normal';
 
     // Check bed availability
     const bed = await Bed.findByPk(bed_id, { include: [{ model: Ward, as: 'ward' }], transaction: t });
-    if (!bed) return error(res, 'Bed not found', 404);
-    if (bed.status !== 'available') return error(res, 'Bed is not available', 400);
+    if (!bed) {
+      await t.rollback();
+      return error(res, 'Bed not found', 404);
+    }
+    if (bed.status !== 'available') {
+      await t.rollback();
+      return error(res, 'Bed is not available', 400);
+    }
 
     // Create admission
     const admission = await Admission.create({
@@ -210,11 +561,25 @@ exports.admitPatient = async (req, res) => {
       visit_id,
       bed_id,
       admitted_by: req.user.id,
-      status: 'admitted',
+      status: 'pending_arrival',
+      admitted_at: null,
     }, { transaction: t });
 
-    // Mark bed as occupied
-    await bed.update({ status: 'occupied' }, { transaction: t });
+    // Reserve bed until ward staff confirms physical arrival
+    await bed.update({ status: 'reserved' }, { transaction: t });
+
+    const allowedIds = new Set(ADMIT_TRANSPORT_CHECKLIST_OPTIONS.map((o) => o.id));
+    let checklistStored = null;
+    if (Array.isArray(equipment_checklist) && equipment_checklist.length > 0) {
+      const picked = equipment_checklist
+        .filter((row) => row && row.checked && allowedIds.has(row.id))
+        .map((row) => {
+          const opt = ADMIT_TRANSPORT_CHECKLIST_OPTIONS.find((o) => o.id === row.id);
+          return opt ? { id: opt.id, label: opt.label } : null;
+        })
+        .filter(Boolean);
+      checklistStored = picked.length ? picked : null;
+    }
 
     // Create transport request
     const transportReq = await TransportRequest.create({
@@ -224,7 +589,9 @@ exports.admitPatient = async (req, res) => {
       to_location: `${bed.ward.name} - Bed ${bed.bed_number}`,
       equipment_required: equipment_required || 'wheelchair',
       equipment_notes: equipment_notes || null,
-      priority: 'normal',
+      critical_notes: critical_notes && String(critical_notes).trim() ? String(critical_notes).trim() : null,
+      equipment_checklist: checklistStored,
+      priority: transportPriority,
       requested_by: req.user.id,
     }, { transaction: t });
 
@@ -241,6 +608,21 @@ exports.admitPatient = async (req, res) => {
       transportRequest: transportReq,
       admission,
       bed: { id: bed.id, bed_number: bed.bed_number, ward_name: bed.ward.name },
+    });
+    try {
+      const io = getIO();
+      io.to('room:porter').emit('transport:queue_refresh', { reason: 'new_request' });
+    } catch (e) {
+      /* ignore */
+    }
+    notificationService.emitWardStaffAdmission({
+      admission_id: admission.id,
+      visit_id,
+      bed_id,
+      ward_id: bed.ward_id,
+      ward_name: bed.ward.name,
+      room_number: bed.room_number,
+      bed_number: bed.bed_number,
     });
     notificationService.emitWardUpdate({
       type: 'admission',

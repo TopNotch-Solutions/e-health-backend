@@ -3,8 +3,12 @@ module.exports = (sequelize, DataTypes) => {
   const Bed = sequelize.define('Bed', {
     id: { type: DataTypes.CHAR(36), primaryKey: true },
     ward_id: { type: DataTypes.CHAR(36), allowNull: false },
+    room_number: { type: DataTypes.STRING(20), allowNull: true },
     bed_number: { type: DataTypes.STRING(20), allowNull: false },
-    status: { type: DataTypes.ENUM('available', 'occupied', 'out_of_service'), defaultValue: 'available' },
+    status: {
+      type: DataTypes.ENUM('available', 'reserved', 'occupied', 'out_of_service'),
+      defaultValue: 'available',
+    },
     condition_note: { type: DataTypes.STRING(255) },
   }, {
     tableName: 'beds',

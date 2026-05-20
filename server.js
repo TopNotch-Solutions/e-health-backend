@@ -91,19 +91,25 @@ const PORT = process.env.PORT || 5000;
 sequelize.authenticate()
   .then(() => {
     console.log('Database connected successfully');
-    
-    // Add this sync statement here:
-    // alter: true will safely update tables if they exist, or create them if they don't.
-    return sequelize.sync({ alter: true }); 
+    // Schema changes belong in migrations (`npm run db:migrate`), not sync+alter.
+    // alter:true can add duplicate indexes on every restart and hit MySQL's 64-index limit.
+    const runAlterSync = process.env.SEQUELIZE_SYNC_ALTER === '1';
+    if (runAlterSync) {
+      console.warn('SEQUELIZE_SYNC_ALTER=1: running sequelize.sync({ alter: true }) — not recommended');
+      return sequelize.sync({ alter: true });
+    }
+    return null;
   })
   .then(() => {
-    console.log('All database tables synchronized successfully');
+    if (process.env.SEQUELIZE_SYNC_ALTER === '1') {
+      console.log('Database tables synchronized (alter mode)');
+    }
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error('Unable to connect or sync database:', err);
+    console.error('Unable to connect to database:', err);
   });
 
 module.exports = { app, server };

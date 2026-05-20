@@ -29,6 +29,7 @@ module.exports = (sequelize, DataTypes) => {
     Visit.hasMany(models.LabRequest, { foreignKey: 'visit_id', as: 'labRequests' });
     Visit.hasMany(models.SonarRequest, { foreignKey: 'visit_id', as: 'sonarRequests' });
     Visit.hasOne(models.Admission, { foreignKey: 'visit_id', as: 'admission' });
+    Visit.hasMany(models.TransportRequest, { foreignKey: 'visit_id', as: 'transportRequests' });
   };
 
   return Visit;

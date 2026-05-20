@@ -15,6 +15,7 @@ module.exports = (sequelize, DataTypes) => {
       through: 'role_permissions',
       foreignKey: 'role_id',
       otherKey: 'permission_id',
+      timestamps: false,
     });
   };
 

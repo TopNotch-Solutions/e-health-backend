@@ -8,6 +8,9 @@ module.exports = (sequelize, DataTypes) => {
     clinical_notes: { type: DataTypes.TEXT },
     blood_details: { type: DataTypes.TEXT },
     nurse_id: { type: DataTypes.CHAR(36) },
+    is_emergency: { type: DataTypes.BOOLEAN, defaultValue: false },
+    tests: { type: DataTypes.JSON },
+    queue_entry_id: { type: DataTypes.CHAR(36) },
     status: { type: DataTypes.ENUM('pending_sample', 'sample_collected', 'processing', 'completed'), defaultValue: 'pending_sample' },
   }, {
     tableName: 'lab_requests',

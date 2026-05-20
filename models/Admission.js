@@ -5,11 +5,14 @@ module.exports = (sequelize, DataTypes) => {
     visit_id: { type: DataTypes.CHAR(36), allowNull: false },
     bed_id: { type: DataTypes.CHAR(36), allowNull: false },
     admitted_by: { type: DataTypes.CHAR(36), allowNull: false },
-    admitted_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    admitted_at: { type: DataTypes.DATE, allowNull: true },
     discharged_at: { type: DataTypes.DATE },
     discharged_by: { type: DataTypes.CHAR(36) },
     discharge_notes: { type: DataTypes.TEXT },
-    status: { type: DataTypes.ENUM('admitted', 'discharged', 'transferred', 'deceased'), defaultValue: 'admitted' },
+    status: {
+      type: DataTypes.ENUM('pending_arrival', 'admitted', 'discharged', 'transferred', 'deceased'),
+      defaultValue: 'pending_arrival',
+    },
   }, {
     tableName: 'admissions',
     timestamps: false,
