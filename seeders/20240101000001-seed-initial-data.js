@@ -2,6 +2,7 @@
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const { ROLES, PERMISSIONS, ROLE_PERMISSIONS } = require('../config/roles');
+const { deleteRefreshTokensForUserEmail } = require('../utils/seedHelpers');
 
 const FACILITY_NAME = 'Central State Hospital';
 const ADMIN_EMAIL = 'admin@ehealth.gov';
@@ -126,9 +127,7 @@ module.exports = {
   },
 
   async down(queryInterface) {
-    await queryInterface.sequelize.query(
-      `DELETE FROM refresh_tokens WHERE user_id IN (SELECT id FROM users WHERE email = '${ADMIN_EMAIL}')`
-    );
+    await deleteRefreshTokensForUserEmail(queryInterface, ADMIN_EMAIL);
     await queryInterface.bulkDelete('users', { email: ADMIN_EMAIL }, {});
     await queryInterface.bulkDelete('role_permissions', null, {});
     await queryInterface.bulkDelete('permissions', null, {});

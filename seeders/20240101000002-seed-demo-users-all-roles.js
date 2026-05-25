@@ -3,6 +3,7 @@
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const { ROLES } = require('../config/roles');
+const { deleteRefreshTokensForUserEmailLike } = require('../utils/seedHelpers');
 
 /** Shared password for all demo accounts (non-production). Change in production. */
 const DEMO_PASSWORD = 'Demo123!';
@@ -26,16 +27,12 @@ module.exports = {
 
     const facilityId = facility.id;
 
-    // Idempotent: remove prior demo users and their refresh tokens
-    await queryInterface.sequelize.query(`
-      DELETE rt FROM refresh_tokens rt
-      INNER JOIN users u ON u.id = rt.user_id
-      WHERE u.email LIKE :demoPattern
-    `, { replacements: { demoPattern: '%@demo.ehealth.gov' } });
+    const demoPattern = '%@demo.ehealth.gov';
+    await deleteRefreshTokensForUserEmailLike(queryInterface, demoPattern);
 
     await queryInterface.sequelize.query(
       'DELETE FROM users WHERE email LIKE :demoPattern',
-      { replacements: { demoPattern: '%@demo.ehealth.gov' } }
+      { replacements: { demoPattern } }
     );
 
     const [roles] = await queryInterface.sequelize.query('SELECT id, name FROM roles');
@@ -75,15 +72,11 @@ module.exports = {
   },
 
   async down(queryInterface) {
-    await queryInterface.sequelize.query(`
-      DELETE rt FROM refresh_tokens rt
-      INNER JOIN users u ON u.id = rt.user_id
-      WHERE u.email LIKE :demoPattern
-    `, { replacements: { demoPattern: '%@demo.ehealth.gov' } });
-
+    const demoPattern = '%@demo.ehealth.gov';
+    await deleteRefreshTokensForUserEmailLike(queryInterface, demoPattern);
     await queryInterface.sequelize.query(
       'DELETE FROM users WHERE email LIKE :demoPattern',
-      { replacements: { demoPattern: '%@demo.ehealth.gov' } }
+      { replacements: { demoPattern } }
     );
   },
 };
