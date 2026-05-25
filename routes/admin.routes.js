@@ -9,6 +9,10 @@ router.use(authenticate);
 // Admin dashboard
 router.get('/dashboard', allowRoles('system_admin'), adminController.getDashboard);
 
+// Facility management (national)
+router.get('/facilities', authorize('facility', 'read'), adminController.getFacilities);
+router.post('/facilities', authorize('facility', 'create'), auditMiddleware('facility'), adminController.createFacility);
+
 // User management
 router.get('/users', authorize('user', 'read'), adminController.getUsers);
 router.post('/users', authorize('user', 'create'), auditMiddleware('user'), adminController.createUser);

@@ -3,14 +3,18 @@ const { v4: uuidv4 } = require('uuid');
 const {
   Consultation, Prescription, PrescriptionItem, Visit, Patient, QueueEntry,
   LabRequest, SonarRequest, Admission, Bed, Ward, TransportRequest,
-  DietPrescription, MealPlan, PharmacyInventory, Bill, BillItem,
+  PharmacyInventory, Bill, BillItem,
   Referral, sequelize,
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const { ADMIT_TRANSPORT_CHECKLIST_OPTIONS } = require('../constants/admitTransportChecklist');
 const queueService = require('../services/queueService');
 const notificationService = require('../services/notificationService');
+const { resolveStockStatus, enrichItemsWithStock } = require('../services/pharmacyStockStatus');
 const { getIO } = require('../socket');
+const { emitDoctorActivity } = require('../services/notificationService');
+const dietPrescriptionService = require('../services/dietPrescriptionService');
+const billingChargeService = require('../services/billingChargeService');
 
 // Create consultation
 exports.createConsultation = async (req, res) => {
@@ -29,6 +33,8 @@ exports.createConsultation = async (req, res) => {
       notes: notes || null,
       actions_taken: actions_taken || null,
     });
+
+    emitDoctorActivity({ visitId: visit_id, consultationId: consultation.id, doctorId: req.user.id, action: 'consultation' });
 
     return created(res, consultation, 'Consultation created');
   } catch (err) {
@@ -90,7 +96,12 @@ async function createPrescriptionWithItems({
     });
 
     const stockLevel = stockItem ? stockItem.quantity_in_stock : 0;
-    const isLowStock = stockLevel < (item.quantity || 1);
+    const stock = resolveStockStatus({
+      found: !!stockItem,
+      quantityInStock: stockLevel,
+      reorderLevel: stockItem?.reorder_level,
+      requiredQty: item.quantity || 1,
+    });
 
     const prescItem = await PrescriptionItem.create(
       {
@@ -103,26 +114,44 @@ async function createPrescriptionWithItems({
         duration: item.duration || null,
         instructions: item.instructions || null,
         stock_at_prescribe: stockLevel,
-        is_available: !isLowStock,
+        is_available: stock.can_dispense,
       },
       { transaction }
     );
 
     prescriptionItems.push(prescItem);
 
-    if (isLowStock) {
+    if (stock.stock_status === 'out_of_stock') {
       lowStockAlerts.push({
         medication_name: item.medication_name,
         prescribed_qty: item.quantity,
         stock_available: stockLevel,
+        stock_status: 'out_of_stock',
+      });
+    } else if (stock.stock_status === 'low_stock') {
+      lowStockAlerts.push({
+        medication_name: item.medication_name,
+        prescribed_qty: item.quantity,
+        stock_available: stockLevel,
+        stock_status: 'low_stock',
       });
     }
   }
 
-  const lowStockNote =
-    lowStockAlerts.length > 0
-      ? `Low stock alert: ${lowStockAlerts.map((a) => a.medication_name).join(', ')}`
-      : null;
+  const outNames = lowStockAlerts
+    .filter((a) => a.stock_status === 'out_of_stock')
+    .map((a) => a.medication_name);
+  const lowNames = lowStockAlerts
+    .filter((a) => a.stock_status === 'low_stock')
+    .map((a) => a.medication_name);
+  const noteParts = [];
+  if (outNames.length) {
+    noteParts.push(`Out of stock (prescribed anyway): ${outNames.join(', ')}`);
+  }
+  if (lowNames.length) {
+    noteParts.push(`Low stock: ${lowNames.join(', ')}`);
+  }
+  const lowStockNote = noteParts.length ? noteParts.join(' · ') : null;
 
   return { prescription, prescriptionItems, lowStockAlerts, lowStockNote };
 }
@@ -166,6 +195,15 @@ exports.createPrescription = async (req, res) => {
         facility_id: req.user.facility_id,
         transaction: t,
       });
+
+    await billingChargeService.chargeConsultationFee(
+      visit_id,
+      consultation_id,
+      req.user.facility_id,
+      t
+    );
+
+    // Medication fees are added when the pharmacist dispenses (see pharmacy.controller)
 
     // Complete doctor consultation queue entry and hand off to pharmacy (single transaction)
     let queueResult = { completedEntry: null, nextEntry: null };
@@ -238,11 +276,23 @@ exports.createPrescription = async (req, res) => {
       console.error('Post-prescription notification error:', emitErr.message);
     }
 
+    const itemsPayload = await enrichItemsWithStock(
+      prescriptionItems.map((row) => (row.toJSON ? row.toJSON() : row)),
+      req.user.facility_id
+    );
+
+    emitDoctorActivity({
+      visitId: visit_id,
+      prescriptionId: prescription.id,
+      doctorId: req.user.id,
+      action: 'prescription',
+    });
+
     return created(
       res,
       {
         prescription,
-        items: prescriptionItems,
+        items: itemsPayload,
         queueEntry: queueResult.nextEntry,
         doctorQueueCompleted: Boolean(queueResult.completedEntry),
         lowStockAlerts,
@@ -458,6 +508,13 @@ exports.createLabOrder = async (req, res) => {
       ? 'Patient sent to laboratory and prescription queued for pharmacy'
       : 'Patient sent to laboratory';
 
+    emitDoctorActivity({
+      visitId: visit_id,
+      labRequestId: labRequest.id,
+      doctorId: req.user.id,
+      action: 'lab_order',
+    });
+
     return created(
       res,
       {
@@ -482,35 +539,148 @@ exports.createLabOrder = async (req, res) => {
 
 exports.createLabRequest = exports.createLabOrder;
 
-// Request sonar
+// Clinical referral to ultrasound (sonar) — patient joins sonar queue; doctor queue completes.
 exports.createSonarRequest = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
-    const { visit_id, scan_type, clinical_notes } = req.body;
-    if (!visit_id || !scan_type) return error(res, 'visit_id and scan_type are required', 400);
-
-    const sonarRequest = await SonarRequest.create({
-      id: uuidv4(),
+    const {
       visit_id,
-      requested_by: req.user.id,
+      queue_entry_id,
       scan_type,
-      clinical_notes: clinical_notes || null,
+      scan_id,
+      symptoms,
+      clinical_notes,
+      diagnostic_questions,
+      prep_instructions,
+      is_emergency,
+    } = req.body;
+
+    if (!visit_id || !scan_type) {
+      await t.rollback();
+      return error(res, 'visit_id and scan_type are required', 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, {
+      include: [{ model: Patient, as: 'patient', attributes: ['id', 'is_emergency'] }],
+      transaction: t,
     });
+    if (!visit) {
+      await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
 
-    const queueEntry = await queueService.pushToQueue({
-      visit_id,
-      department: 'sonar',
-      priority: 'normal',
-      pushed_by: req.user.id,
-      notes: `Sonar request: ${scan_type}`,
-    });
+    const emergency = Boolean(is_emergency) || Boolean(visit.patient?.is_emergency);
 
-    const io = getIO();
-    io.to('room:radiologist').emit('queue:new_patient', { queueEntry, sonarRequest });
+    const sonarRequest = await SonarRequest.create(
+      {
+        id: uuidv4(),
+        visit_id,
+        requested_by: req.user.id,
+        scan_type,
+        symptoms: symptoms?.trim() || null,
+        clinical_notes: clinical_notes?.trim() || null,
+        diagnostic_questions: diagnostic_questions?.trim() || null,
+        prep_instructions: prep_instructions?.trim() || null,
+        is_emergency: emergency,
+        status: 'pending',
+      },
+      { transaction: t }
+    );
 
-    return created(res, { sonarRequest, queueEntry }, 'Sonar request created');
+    let queueResult = { completedEntry: null, nextEntry: null };
+
+    if (queue_entry_id) {
+      const doctorEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+      if (
+        doctorEntry &&
+        doctorEntry.visit_id === visit_id &&
+        doctorEntry.department === 'doctor' &&
+        ['waiting', 'in_progress'].includes(doctorEntry.status)
+      ) {
+        queueResult = await queueService.completeEntry(
+          queue_entry_id,
+          {
+            nextDepartment: 'sonar',
+            nextPriority: emergency ? 'emergency' : 'normal',
+            notes: `Ultrasound: ${scan_type}`,
+            pushed_by: req.user.id,
+          },
+          t
+        );
+      } else {
+        queueResult.nextEntry = await queueService.pushToQueue(
+          {
+            visit_id,
+            department: 'sonar',
+            priority: emergency ? 'emergency' : 'normal',
+            pushed_by: req.user.id,
+            notes: `Ultrasound: ${scan_type}`,
+          },
+          t
+        );
+      }
+    } else {
+      queueResult.nextEntry = await queueService.pushToQueue(
+        {
+          visit_id,
+          department: 'sonar',
+          priority: emergency ? 'emergency' : 'normal',
+          pushed_by: req.user.id,
+          notes: `Ultrasound: ${scan_type}`,
+        },
+        t
+      );
+    }
+
+    if (queueResult.nextEntry?.id) {
+      await sonarRequest.update({ queue_entry_id: queueResult.nextEntry.id }, { transaction: t });
+    }
+
+    await t.commit();
+
+    try {
+      const io = getIO();
+      if (queueResult.completedEntry) {
+        io.to('room:doctor').emit('queue:patient_moved', {
+          entryId: queueResult.completedEntry.id,
+          status: 'completed',
+          department: 'doctor',
+        });
+        const doctorEntries = await queueService.getQueue('doctor', req.user.facility_id);
+        io.to('room:doctor').emit('queue:refresh', { department: 'doctor', entries: doctorEntries });
+      }
+      if (queueResult.nextEntry) {
+        io.to('room:radiologist').emit('queue:new_patient', {
+          queueEntry: queueResult.nextEntry,
+          sonarRequest,
+        });
+        io.to('room:radiologist').emit('queue:refresh', { department: 'sonar' });
+      }
+      emitDoctorActivity({
+        visitId: visit_id,
+        sonarRequestId: sonarRequest.id,
+        doctorId: req.user.id,
+        action: 'sonar_referral',
+      });
+    } catch (emitErr) {
+      console.error('Sonar referral socket emit error:', emitErr.message);
+    }
+
+    return created(
+      res,
+      {
+        sonarRequest,
+        queueEntry: queueResult.nextEntry,
+        doctorQueueCompleted: Boolean(queueResult.completedEntry),
+      },
+      'Patient referred to ultrasound — removed from your queue'
+    );
   } catch (err) {
+    await t.rollback();
     console.error('Create sonar request error:', err);
-    return error(res, 'Failed to create sonar request', 500);
+    const message = err.message || 'Failed to create sonar request';
+    const status = message.includes('already in the') ? 409 : 500;
+    return error(res, message, status);
   }
 };
 
@@ -586,7 +756,13 @@ exports.admitPatient = async (req, res) => {
       id: uuidv4(),
       visit_id,
       from_location: 'Doctor Consultation Room',
-      to_location: `${bed.ward.name} - Bed ${bed.bed_number}`,
+      to_location: [
+        bed.ward.name,
+        bed.room_number ? `Room ${bed.room_number}` : null,
+        `Bed ${bed.bed_number}`,
+      ]
+        .filter(Boolean)
+        .join(' — '),
       equipment_required: equipment_required || 'wheelchair',
       equipment_notes: equipment_notes || null,
       critical_notes: critical_notes && String(critical_notes).trim() ? String(critical_notes).trim() : null,
@@ -631,7 +807,35 @@ exports.admitPatient = async (req, res) => {
       ward_id: bed.ward_id,
     });
 
-    return created(res, { admission, transportRequest: transportReq }, 'Patient admitted');
+    let diet = null;
+    if (req.body.diet_type) {
+      try {
+        const result = await dietPrescriptionService.prescribeForAdmission({
+          admissionId: admission.id,
+          prescribedBy: req.user.id,
+          diet_type: req.body.diet_type,
+          description: req.body.diet_description || req.body.description || null,
+          restrictions: req.body.diet_restrictions || req.body.restrictions || null,
+          special_instructions:
+            req.body.diet_special_instructions || req.body.special_instructions || null,
+          start_date: req.body.diet_start_date || dietPrescriptionService.todayDateString(),
+          end_date: req.body.diet_end_date || null,
+        });
+        dietPrescriptionService.emitKitchenOrder(result.kitchenOrder);
+        diet = {
+          dietPrescription: result.dietPrescription,
+          mealPlans: result.mealPlans,
+        };
+      } catch (dietErr) {
+        console.error('Diet prescription on admit error:', dietErr);
+      }
+    }
+
+    return created(
+      res,
+      { admission, transportRequest: transportReq, diet },
+      diet ? 'Patient admitted — diet sent to kitchen' : 'Patient admitted'
+    );
   } catch (err) {
     await t.rollback();
     console.error('Admit patient error:', err);
@@ -656,23 +860,35 @@ exports.dischargePatient = async (req, res) => {
 
     if (!visit) return error(res, 'Visit not found', 404);
 
-    // Check billing constraint for private patients
     if (visit.patient.payment_type === 'private') {
+      await billingChargeService.finalizeBillForDischarge(id, req.user.facility_id, t);
       const bill = await Bill.findOne({ where: { visit_id: id }, transaction: t });
-      if (bill && bill.status !== 'paid' && bill.status !== 'waived') {
-        // Push to billing queue instead
+      const totalDue = bill ? billingChargeService.money(bill.total_amount) : 0;
+
+      if (bill && bill.status !== 'paid' && bill.status !== 'waived' && totalDue > 0) {
         const queueEntry = await queueService.pushToQueue({
           visit_id: id,
           department: 'billing',
           priority: 'normal',
           pushed_by: req.user.id,
-          notes: 'Private patient discharge - pending billing',
+          notes: 'Private patient — settlement required before discharge',
         }, t);
 
+        await visit.update({ current_department: 'billing' }, { transaction: t });
         await t.commit();
 
-        notificationService.emitBillingCharge({ visit_id: id, patient: visit.patient, queueEntry });
-        return success(res, { queueEntry, message: 'Private patient sent to billing before discharge' });
+        notificationService.emitBillingCharge({
+          visit_id: id,
+          patient: visit.patient,
+          queueEntry,
+          bill_id: bill.id,
+          total_amount: totalDue,
+        });
+        return success(
+          res,
+          { queueEntry, bill, total_amount: totalDue },
+          'Patient sent to billing — payment required (cash + EFT)'
+        );
       }
     }
 
@@ -712,53 +928,48 @@ exports.dischargePatient = async (req, res) => {
   }
 };
 
-// Prescribe diet for admitted patient
+// Prescribe diet for admitted patient (ward must have assigned bed)
 exports.prescribeDiet = async (req, res) => {
   try {
-    const { admission_id, diet_type, description, restrictions, special_instructions, start_date, end_date } = req.body;
-    if (!admission_id || !diet_type || !start_date) {
-      return error(res, 'admission_id, diet_type, and start_date are required', 400);
-    }
-
-    const admission = await Admission.findByPk(admission_id);
-    if (!admission) return error(res, 'Admission not found', 404);
-
-    const dietPrescription = await DietPrescription.create({
-      id: uuidv4(),
+    const {
       admission_id,
-      prescribed_by: req.user.id,
       diet_type,
-      description: description || null,
-      restrictions: restrictions || null,
-      special_instructions: special_instructions || null,
+      description,
+      restrictions,
+      special_instructions,
       start_date,
-      end_date: end_date || null,
-    });
-
-    // Auto-generate meal plans for today
-    const meals = ['breakfast', 'lunch', 'dinner'];
-    const mealPlans = [];
-    for (const meal of meals) {
-      const mp = await MealPlan.create({
-        id: uuidv4(),
-        diet_prescription_id: dietPrescription.id,
-        meal_type: meal,
-        meal_date: start_date,
-      });
-      mealPlans.push(mp);
+      end_date,
+    } = req.body;
+    if (!admission_id || !diet_type) {
+      return error(res, 'admission_id and diet_type are required', 400);
     }
 
-    // Notify kitchen
-    notificationService.emitKitchenOrder({
-      dietPrescription,
-      mealPlans,
-      admission_id,
+    const result = await dietPrescriptionService.prescribeForAdmission({
+      admissionId: admission_id,
+      prescribedBy: req.user.id,
+      diet_type,
+      description,
+      restrictions,
+      special_instructions,
+      start_date: start_date || dietPrescriptionService.todayDateString(),
+      end_date,
     });
 
-    return created(res, { dietPrescription, mealPlans }, 'Diet prescribed and kitchen notified');
+    dietPrescriptionService.emitKitchenOrder(result.kitchenOrder);
+
+    return created(
+      res,
+      {
+        dietPrescription: result.dietPrescription,
+        mealPlans: result.mealPlans,
+        kitchenOrder: result.kitchenOrder,
+      },
+      'Diet prescribed — kitchen notified with ward and room'
+    );
   } catch (err) {
     console.error('Prescribe diet error:', err);
-    return error(res, 'Failed to prescribe diet', 500);
+    const status = err.message === 'Admission not found' ? 404 : 500;
+    return error(res, err.message || 'Failed to prescribe diet', status);
   }
 };
 

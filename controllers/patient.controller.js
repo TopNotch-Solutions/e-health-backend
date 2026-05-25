@@ -4,6 +4,8 @@ const { generatePatientNumber, generateVisitNumber, generateEmergencyId } = requ
 const { success, created, error, paginated } = require('../utils/response');
 const { getIO } = require('../socket');
 const queueService = require('../services/queueService');
+const { emitFrontOfficeRegistration } = require('../services/notificationService');
+const billingChargeService = require('../services/billingChargeService');
 
 function parseEmergencyFlag(value) {
   return value === true || value === 'true' || value === 1 || value === '1';
@@ -74,6 +76,8 @@ exports.register = async (req, res) => {
       notes: isEmergency ? 'Emergency registration' : null,
     }, t);
 
+    await billingChargeService.chargeAdmissionFee(visit.id, req.user.facility_id, t);
+
     await t.commit();
 
     // Emit WebSocket event to nurse room
@@ -82,6 +86,13 @@ exports.register = async (req, res) => {
       queueEntry,
       patient: { id: patient.id, first_name, last_name, patient_number: patient.patient_number },
       visit: { id: visit.id, visit_number: visit.visit_number, visit_type: visit.visit_type },
+    });
+
+    emitFrontOfficeRegistration({
+      visitId: visit.id,
+      visitType: visit.visit_type,
+      patientId: patient.id,
+      processedBy: req.user.id,
     });
 
     return created(res, { patient, visit, queueEntry }, 'Patient registered and queued to nurse');
@@ -145,6 +156,13 @@ exports.emergencyRegister = async (req, res) => {
       queueEntry,
       patient: { id: patient.id, temp_id: tempId, patient_number: patient.patient_number },
       visit: { id: visit.id, visit_number: visit.visit_number },
+    });
+
+    emitFrontOfficeRegistration({
+      visitId: visit.id,
+      visitType: 'emergency',
+      patientId: patient.id,
+      processedBy: req.user.id,
     });
 
     return created(res, { patient, visit, queueEntry }, 'Emergency patient registered - prioritized in nurse queue');
@@ -372,6 +390,8 @@ exports.createVisit = async (req, res) => {
       notes: intakeNotes || null,
     }, t);
 
+    await billingChargeService.chargeAdmissionFee(visit.id, req.user.facility_id, t);
+
     await t.commit();
 
     const io = getIO();
@@ -379,6 +399,13 @@ exports.createVisit = async (req, res) => {
       queueEntry,
       patient: { id: patient.id, first_name: patient.first_name, last_name: patient.last_name, patient_number: patient.patient_number },
       visit: { id: visit.id, visit_number: visit.visit_number, visit_type: visitType },
+    });
+
+    emitFrontOfficeRegistration({
+      visitId: visit.id,
+      visitType,
+      patientId: patient.id,
+      processedBy: req.user.id,
     });
 
     return created(res, { visit, queueEntry }, 'Visit created - patient queued to nurse');

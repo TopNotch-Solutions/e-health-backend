@@ -1,0 +1,76 @@
+/** Default NAD unit prices by category; individual overrides below. */
+const CATEGORY_UNIT_PRICES = {
+  Analgesic: 12.5,
+  NSAID: 22.0,
+  Antibiotic: 48.0,
+  Gastrointestinal: 35.0,
+  Respiratory: 40.0,
+  Antihistamine: 18.0,
+  Cardiovascular: 28.0,
+  Antidiabetic: 55.0,
+  Anticonvulsant: 32.0,
+  Psychiatric: 38.0,
+  Supplement: 15.0,
+  'Fluid/electrolyte': 8.0,
+  'IV fluid': 45.0,
+  Emergency: 65.0,
+  Corticosteroid: 42.0,
+  Other: 20.0,
+};
+
+/** Known medications — synced from medication-catalog.json + price overrides. */
+const MEDICATIONS = [
+  { name: 'Panado', generic: 'Paracetamol', category: 'Analgesic', unit_price: 10.0 },
+  { name: 'Calpol', generic: 'Paracetamol', category: 'Analgesic', unit_price: 12.0 },
+  { name: 'Aspirin', generic: 'Acetylsalicylic acid', category: 'Analgesic', unit_price: 8.0 },
+  { name: 'Brufen', generic: 'Ibuprofen', category: 'NSAID', unit_price: 18.0 },
+  { name: 'Voltaren', generic: 'Diclofenac', category: 'NSAID', unit_price: 24.0 },
+  { name: 'Amoxil', generic: 'Amoxicillin', category: 'Antibiotic', unit_price: 35.0 },
+  { name: 'Augmentin', generic: 'Amoxicillin/clavulanate', category: 'Antibiotic', unit_price: 85.0 },
+  { name: 'Zithromax', generic: 'Azithromycin', category: 'Antibiotic', unit_price: 95.0 },
+  { name: 'Ciprobay', generic: 'Ciprofloxacin', category: 'Antibiotic', unit_price: 55.0 },
+  { name: 'Flagyl', generic: 'Metronidazole', category: 'Antibiotic', unit_price: 28.0 },
+  { name: 'Doxycycline', generic: 'Doxycycline', category: 'Antibiotic', unit_price: 42.0 },
+  { name: 'Co-Amoxiclav', generic: 'Amoxicillin/clavulanate', category: 'Antibiotic', unit_price: 78.0 },
+  { name: 'Losec', generic: 'Omeprazole', category: 'Gastrointestinal', unit_price: 32.0 },
+  { name: 'Zantac', generic: 'Ranitidine', category: 'Gastrointestinal', unit_price: 25.0 },
+  { name: 'Metoclopramide', generic: 'Metoclopramide', category: 'Gastrointestinal', unit_price: 18.0 },
+  { name: 'Loperamide', generic: 'Loperamide', category: 'Gastrointestinal', unit_price: 15.0 },
+  { name: 'Ventolin', generic: 'Salbutamol', category: 'Respiratory', unit_price: 38.0 },
+  { name: 'Beclate', generic: 'Beclomethasone', category: 'Respiratory', unit_price: 45.0 },
+  { name: 'Loratadine', generic: 'Loratadine', category: 'Antihistamine', unit_price: 16.0 },
+  { name: 'Chlorpheniramine', generic: 'Chlorpheniramine', category: 'Antihistamine', unit_price: 12.0 },
+  { name: 'Amlodipine', generic: 'Amlodipine', category: 'Cardiovascular', unit_price: 22.0 },
+  { name: 'Enalapril', generic: 'Enalapril', category: 'Cardiovascular', unit_price: 28.0 },
+  { name: 'Atenolol', generic: 'Atenolol', category: 'Cardiovascular', unit_price: 20.0 },
+  { name: 'Hydrochlorothiazide', generic: 'Hydrochlorothiazide', category: 'Cardiovascular', unit_price: 18.0 },
+  { name: 'Metformin', generic: 'Metformin', category: 'Antidiabetic', unit_price: 25.0 },
+  { name: 'Glibenclamide', generic: 'Glibenclamide', category: 'Antidiabetic', unit_price: 30.0 },
+  { name: 'Insulin Actrapid', generic: 'Insulin human', category: 'Antidiabetic', unit_price: 120.0 },
+  { name: 'Phenobarbitone', generic: 'Phenobarbital', category: 'Anticonvulsant', unit_price: 35.0 },
+  { name: 'Phenytoin', generic: 'Phenytoin', category: 'Anticonvulsant', unit_price: 40.0 },
+  { name: 'Haloperidol', generic: 'Haloperidol', category: 'Psychiatric', unit_price: 45.0 },
+  { name: 'Amitriptyline', generic: 'Amitriptyline', category: 'Psychiatric', unit_price: 32.0 },
+  { name: 'Ferrous sulphate', generic: 'Iron supplement', category: 'Supplement', unit_price: 12.0 },
+  { name: 'Folic acid', generic: 'Folic acid', category: 'Supplement', unit_price: 8.0 },
+  { name: 'Zinc sulphate', generic: 'Zinc sulphate', category: 'Supplement', unit_price: 10.0 },
+  { name: 'ORS', generic: 'Oral rehydration salts', category: 'Fluid/electrolyte', unit_price: 6.0 },
+  { name: 'Normal saline 0.9%', generic: 'Sodium chloride', category: 'IV fluid', unit_price: 35.0 },
+  { name: 'Ringer lactate', generic: "Lactated Ringer's", category: 'IV fluid', unit_price: 40.0 },
+  { name: 'Adrenaline', generic: 'Epinephrine', category: 'Emergency', unit_price: 75.0 },
+  { name: 'Hydrocortisone', generic: 'Hydrocortisone', category: 'Corticosteroid', unit_price: 38.0 },
+  { name: 'Dexamethasone', generic: 'Dexamethasone', category: 'Corticosteroid', unit_price: 42.0 },
+  { name: 'Paracetamol 500mg', generic: 'Paracetamol', category: 'Analgesic', unit_price: 5.0 },
+  { name: 'Ibuprofen 400mg', generic: 'Ibuprofen', category: 'NSAID', unit_price: 15.0 },
+  { name: 'Cetirizine', generic: 'Cetirizine', category: 'Antihistamine', unit_price: 14.0 },
+  { name: 'Salbutamol inhaler', generic: 'Salbutamol', category: 'Respiratory', unit_price: 55.0 },
+  { name: 'Ceftriaxone', generic: 'Ceftriaxone', category: 'Antibiotic', unit_price: 110.0 },
+  { name: 'Artemether/Lumefantrine', generic: 'Artemether/lumefantrine', category: 'Antibiotic', unit_price: 95.0 },
+];
+
+function resolveUnitPrice(entry) {
+  if (entry.unit_price != null) return entry.unit_price;
+  return CATEGORY_UNIT_PRICES[entry.category] ?? CATEGORY_UNIT_PRICES.Other;
+}
+
+module.exports = { MEDICATIONS, CATEGORY_UNIT_PRICES, resolveUnitPrice };

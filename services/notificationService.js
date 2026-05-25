@@ -23,6 +23,43 @@ function emitStockAlert(data) {
   const io = getIO();
   io.to('room:doctor').emit('notification:stock_alert', data);
   io.to('room:pharmacist').emit('notification:stock_alert', data);
+  io.to('room:pharmacy_supervisor').emit('notification:stock_alert', data);
+}
+
+/**
+ * Notify pharmacy supervisor of inventory changes (receive, low stock).
+ */
+function emitPharmacyInventoryUpdate(data) {
+  const io = getIO();
+  io.to('room:pharmacy_supervisor').emit('pharmacy:inventory_update', data);
+}
+
+/**
+ * Notify front office supervisor of a new registration or check-in.
+ */
+function emitFrontOfficeRegistration(data) {
+  const io = getIO();
+  io.to('room:front_office_supervisor').emit('front_office:registration', data);
+}
+
+function emitNurseActivity(data) {
+  const io = getIO();
+  io.to('room:nurse_supervisor').emit('nurse:activity', data);
+}
+
+function emitDoctorActivity(data) {
+  const io = getIO();
+  io.to('room:doctor_supervisor').emit('doctor:activity', data);
+}
+
+function emitLaboratoryActivity(data) {
+  const io = getIO();
+  io.to('room:laboratory_supervisor').emit('laboratory:activity', data);
+}
+
+function emitRadiologistSupervisorActivity(data) {
+  const io = getIO();
+  io.to('room:radiologist_supervisor').emit('radiologist:activity', data);
 }
 
 /**
@@ -103,4 +140,10 @@ module.exports = {
   emitWardStaffQueueRefresh,
   emitKitchenOrder,
   emitBillingCharge,
+  emitPharmacyInventoryUpdate,
+  emitFrontOfficeRegistration,
+  emitNurseActivity,
+  emitDoctorActivity,
+  emitLaboratoryActivity,
+  emitRadiologistSupervisorActivity,
 };

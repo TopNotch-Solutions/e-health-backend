@@ -1,19 +1,207 @@
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const {
   User, Role, Patient, Visit, QueueEntry, Admission, AuditLog,
-  SocialWorkerCase, Facility, sequelize,
+  SocialWorkerCase, Facility, RevenueShift, sequelize,
 } = require('../models');
 const { Op } = require('sequelize');
 const { success, created, error, paginated } = require('../utils/response');
+
+function isSystemAdmin(req) {
+  return req.user?.role?.name === 'system_admin';
+}
+
+function generateTempPassword() {
+  return crypto.randomBytes(9).toString('base64url').slice(0, 12);
+}
+
+async function fetchNationalDashboardAnalytics() {
+  const days = 14;
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - (days - 1));
+  startDate.setHours(0, 0, 0, 0);
+
+  const departments = ['nurse', 'doctor', 'pharmacy', 'lab', 'sonar', 'billing', 'transport'];
+
+  const [
+    visitsRaw,
+    patientsByCategory,
+    patientsByPaymentType,
+    facilitiesByType,
+    staffByRoleRows,
+    queueCounts,
+  ] = await Promise.all([
+    Visit.findAll({
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('created_at')), 'date'],
+        [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
+      ],
+      where: { created_at: { [Op.gte]: startDate } },
+      group: [sequelize.fn('DATE', sequelize.col('created_at'))],
+      order: [[sequelize.fn('DATE', sequelize.col('created_at')), 'ASC']],
+      raw: true,
+    }),
+    Patient.findAll({
+      attributes: ['category', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+      group: ['category'],
+      raw: true,
+    }),
+    Patient.findAll({
+      attributes: ['payment_type', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+      group: ['payment_type'],
+      raw: true,
+    }),
+    Facility.findAll({
+      attributes: ['type', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+      group: ['type'],
+      raw: true,
+    }),
+    User.findAll({
+      attributes: [[sequelize.fn('COUNT', sequelize.col('User.id')), 'count']],
+      where: { is_active: true },
+      include: [{ model: Role, as: 'role', attributes: ['name', 'display_name'] }],
+      group: ['role_id', 'role.id', 'role.name', 'role.display_name'],
+    }),
+    Promise.all(
+      departments.map(async (department) => ({
+        department,
+        count: await QueueEntry.count({ where: { department, status: 'waiting' } }),
+      }))
+    ),
+  ]);
+
+  const visitsByDay = [];
+  const countByDate = Object.fromEntries(
+    visitsRaw.map((r) => {
+      const d = r.date instanceof Date
+        ? r.date.toISOString().slice(0, 10)
+        : String(r.date).slice(0, 10);
+      return [d, parseInt(r.count, 10) || 0];
+    })
+  );
+  for (let i = 0; i < days; i += 1) {
+    const d = new Date(startDate);
+    d.setDate(d.getDate() + i);
+    const key = d.toISOString().slice(0, 10);
+    visitsByDay.push({ date: key, count: countByDate[key] || 0 });
+  }
+
+  const staffByRole = staffByRoleRows
+    .map((row) => {
+      const plain = row.get ? row.get({ plain: true }) : row;
+      const label = plain.role?.display_name || plain.role?.name || 'Unknown';
+      return { role: label, count: parseInt(plain.count, 10) || 0 };
+    })
+    .filter((r) => r.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  const mapCountRows = (rows, keyField) =>
+    rows.map((r) => ({
+      label: r[keyField] ? String(r[keyField]).replace(/_/g, ' ') : 'Unknown',
+      count: parseInt(r.count, 10) || 0,
+    }));
+
+  const FACILITY_LABELS = {
+    hospital: 'State Hospital',
+    clinic: 'Clinic',
+    health_center: 'Health Center',
+  };
+
+  return {
+    visitsByDay,
+    staffByRole,
+    patientsByCategory: mapCountRows(patientsByCategory, 'category'),
+    patientsByPaymentType: mapCountRows(patientsByPaymentType, 'payment_type'),
+    facilitiesByType: facilitiesByType.map((r) => ({
+      label: FACILITY_LABELS[r.type] || r.type,
+      count: parseInt(r.count, 10) || 0,
+    })),
+    queueWaiting: queueCounts.filter((q) => q.count > 0),
+  };
+}
+
+// === FACILITY MANAGEMENT ===
+
+exports.getFacilities = async (req, res) => {
+  try {
+    const facilities = await Facility.findAll({
+      order: [['name', 'ASC']],
+      attributes: ['id', 'name', 'type', 'province', 'district', 'address', 'phone', 'created_at'],
+    });
+
+    const staffCounts = await User.findAll({
+      attributes: [
+        'facility_id',
+        [sequelize.fn('COUNT', sequelize.col('id')), 'staff_count'],
+      ],
+      group: ['facility_id'],
+      raw: true,
+    });
+    const countByFacility = Object.fromEntries(
+      staffCounts.map((r) => [r.facility_id, parseInt(r.staff_count, 10) || 0])
+    );
+
+    const rows = facilities.map((f) => {
+      const plain = f.toJSON();
+      return {
+        ...plain,
+        staff_count: countByFacility[plain.id] || 0,
+        location: [plain.district, plain.province].filter(Boolean).join(', ') || plain.province || '—',
+      };
+    });
+
+    return success(res, rows);
+  } catch (err) {
+    console.error('getFacilities error:', err);
+    return error(res, 'Failed to fetch facilities', 500);
+  }
+};
+
+exports.createFacility = async (req, res) => {
+  try {
+    const { name, type, address, province, district, phone } = req.body;
+    if (!name || !type) {
+      return error(res, 'name and type are required', 400);
+    }
+    const allowedTypes = ['hospital', 'clinic', 'health_center'];
+    if (!allowedTypes.includes(type)) {
+      return error(res, `type must be one of: ${allowedTypes.join(', ')}`, 400);
+    }
+
+    const facility = await Facility.create({
+      id: uuidv4(),
+      name: name.trim(),
+      type,
+      address: address?.trim() || null,
+      province: province?.trim() || null,
+      district: district?.trim() || null,
+      phone: phone?.trim() || null,
+    });
+
+    return created(res, { ...facility.toJSON(), staff_count: 0 }, 'Facility created');
+  } catch (err) {
+    console.error('createFacility error:', err);
+    return error(res, 'Failed to create facility', 500);
+  }
+};
 
 // === USER MANAGEMENT ===
 
 exports.getUsers = async (req, res) => {
   try {
-    const { page = 1, limit = 20, search, role } = req.query;
+    const { page = 1, limit = 50, search, role, facility_id, status } = req.query;
     const offset = (page - 1) * limit;
-    const where = { facility_id: req.user.facility_id };
+    const where = {};
+
+    if (!isSystemAdmin(req)) {
+      where.facility_id = req.user.facility_id;
+    } else if (facility_id) {
+      where.facility_id = facility_id;
+    }
+
+    if (status === 'active') where.is_active = true;
+    if (status === 'inactive') where.is_active = false;
 
     if (role) {
       const roleRecord = await Role.findOne({ where: { name: role } });
@@ -30,11 +218,14 @@ exports.getUsers = async (req, res) => {
 
     const { rows, count } = await User.findAndCountAll({
       where,
-      include: [{ model: Role, as: 'role', attributes: ['id', 'name', 'display_name'] }],
+      include: [
+        { model: Role, as: 'role', attributes: ['id', 'name', 'display_name'] },
+        { model: Facility, as: 'facility', attributes: ['id', 'name', 'province', 'district'] },
+      ],
       attributes: { exclude: ['password_hash'] },
-      limit: parseInt(limit),
-      offset: parseInt(offset),
-      order: [['created_at', 'DESC']],
+      limit: parseInt(limit, 10),
+      offset: parseInt(offset, 10),
+      order: [['last_name', 'ASC'], ['first_name', 'ASC']],
     });
 
     return paginated(res, rows, count, page, limit);
@@ -45,32 +236,56 @@ exports.getUsers = async (req, res) => {
 
 exports.createUser = async (req, res) => {
   try {
-    const { first_name, last_name, email, password, role_id, employee_id, phone } = req.body;
-    if (!first_name || !last_name || !email || !password || !role_id) {
-      return error(res, 'first_name, last_name, email, password, and role_id are required', 400);
+    const {
+      first_name, last_name, email, password, role_id, employee_id, phone, facility_id,
+    } = req.body;
+    if (!first_name || !last_name || !email || !role_id) {
+      return error(res, 'first_name, last_name, email, and role_id are required', 400);
     }
 
-    const existing = await User.findOne({ where: { email } });
+    const targetFacilityId = isSystemAdmin(req)
+      ? facility_id
+      : req.user.facility_id;
+    if (!targetFacilityId) {
+      return error(res, 'facility_id is required', 400);
+    }
+
+    const facility = await Facility.findByPk(targetFacilityId);
+    if (!facility) return error(res, 'Facility not found', 404);
+
+    const existing = await User.findOne({ where: { email: email.trim() } });
     if (existing) return error(res, 'Email already in use', 400);
 
-    const password_hash = await bcrypt.hash(password, 10);
+    const tempPassword = password || generateTempPassword();
+    const password_hash = await bcrypt.hash(tempPassword, 10);
 
     const user = await User.create({
       id: uuidv4(),
-      facility_id: req.user.facility_id,
+      facility_id: targetFacilityId,
       role_id,
       employee_id: employee_id || null,
-      first_name,
-      last_name,
-      email,
+      first_name: first_name.trim(),
+      last_name: last_name.trim(),
+      email: email.trim(),
       password_hash,
       phone: phone || null,
+      is_active: true,
     });
 
-    const result = user.toJSON();
-    delete result.password_hash;
+    const result = await User.findByPk(user.id, {
+      attributes: { exclude: ['password_hash'] },
+      include: [
+        { model: Role, as: 'role', attributes: ['id', 'name', 'display_name'] },
+        { model: Facility, as: 'facility', attributes: ['id', 'name'] },
+      ],
+    });
 
-    return created(res, result, 'User created');
+    const payload = result.toJSON();
+    if (!password) {
+      payload.temporary_password = tempPassword;
+    }
+
+    return created(res, payload, 'User created');
   } catch (err) {
     console.error('Create user error:', err);
     return error(res, 'Failed to create user', 500);
@@ -81,6 +296,10 @@ exports.updateUser = async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id);
     if (!user) return error(res, 'User not found', 404);
+
+    if (!isSystemAdmin(req) && user.facility_id !== req.user.facility_id) {
+      return error(res, 'Access denied', 403);
+    }
 
     const allowed = ['first_name', 'last_name', 'email', 'phone', 'role_id', 'employee_id', 'is_active'];
     const updates = {};
@@ -105,7 +324,11 @@ exports.updateUser = async (req, res) => {
 
 exports.getRoles = async (req, res) => {
   try {
-    const roles = await Role.findAll({ order: [['name', 'ASC']] });
+    const where = {};
+    if (isSystemAdmin(req)) {
+      where.name = { [Op.notIn]: ['system_admin', 'executive'] };
+    }
+    const roles = await Role.findAll({ where, order: [['display_name', 'ASC'], ['name', 'ASC']] });
     return success(res, roles);
   } catch (err) {
     return error(res, 'Failed to fetch roles', 500);
@@ -146,6 +369,40 @@ exports.getAuditLogs = async (req, res) => {
 
 exports.getDashboard = async (req, res) => {
   try {
+    if (isSystemAdmin(req)) {
+      const [
+        totalFacilities,
+        activeEmployees,
+        inactiveEmployees,
+        pendingShiftReviews,
+        openSocialCases,
+        totalPatients,
+        analytics,
+      ] = await Promise.all([
+        Facility.count(),
+        User.count({ where: { is_active: true } }),
+        User.count({ where: { is_active: false } }),
+        RevenueShift.count({
+          where: { status: { [Op.in]: ['closed', 'discrepancy'] }, reconciled_by: null },
+        }),
+        SocialWorkerCase.count({ where: { status: { [Op.in]: ['open', 'in_progress'] } } }),
+        Patient.count(),
+        fetchNationalDashboardAnalytics(),
+      ]);
+
+      return success(res, {
+        scope: 'national',
+        totalFacilities,
+        activeEmployees,
+        inactiveEmployees,
+        pendingRequests: pendingShiftReviews + openSocialCases,
+        pendingShiftReviews,
+        openSocialCases,
+        totalPatients,
+        analytics,
+      });
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -165,7 +422,6 @@ exports.getDashboard = async (req, res) => {
       Visit.count({ where: { visit_type: 'emergency', created_at: { [Op.gte]: today } } }),
     ]);
 
-    // Queue stats
     const departments = ['nurse', 'doctor', 'pharmacy', 'lab', 'sonar', 'billing', 'transport'];
     const queueStats = {};
     for (const dept of departments) {
@@ -175,6 +431,7 @@ exports.getDashboard = async (req, res) => {
     }
 
     return success(res, {
+      scope: 'facility',
       totalPatients,
       todayVisits,
       activeVisits,

@@ -5,6 +5,7 @@ module.exports = (sequelize, DataTypes) => {
     sonar_request_id: { type: DataTypes.CHAR(36), allowNull: false },
     performed_by: { type: DataTypes.CHAR(36), allowNull: false },
     findings: { type: DataTypes.TEXT },
+    impression: { type: DataTypes.TEXT },
     images: { type: DataTypes.JSON },
     report: { type: DataTypes.TEXT },
   }, {

@@ -50,7 +50,7 @@ module.exports = {
       if (!role) continue;
 
       const display = roleDisplayName(roleName);
-      const emailLocal = roleName.replace(/_/g, '.'); // avoid very long local parts; still unique per role
+      const emailLocal = roleName; // e.g. pharmacy_supervisor@demo.ehealth.gov
       users.push({
         id: uuidv4(),
         facility_id: facilityId,

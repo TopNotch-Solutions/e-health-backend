@@ -8,7 +8,11 @@ router.use(authenticate);
 
 // === Pharmacy Inventory ===
 router.get('/pharmacy', authorize('inventory', 'read'), inventoryController.getPharmacyInventory);
+router.get('/pharmacy/medication-catalog', authorize('inventory', 'read'), inventoryController.getMedicationCatalog);
+router.get('/pharmacy/stock-status', authorize('inventory', 'read'), inventoryController.checkMedicationStock);
 router.get('/pharmacy/alerts', authorize('inventory', 'read'), inventoryController.getAlerts);
+router.get('/pharmacy/supervisor-metrics', authorize('inventory', 'read'), inventoryController.getSupervisorMetrics);
+router.get('/pharmacy/recent-prescriptions', authorize('prescription', 'read'), inventoryController.getRecentPrescriptions);
 router.post('/pharmacy', authorize('inventory', 'create'), auditMiddleware('inventory'), inventoryController.addMedication);
 router.post('/pharmacy/:id/receive', authorize('inventory', 'update'), auditMiddleware('inventory'), inventoryController.receiveStock);
 router.put('/pharmacy/:id', authorize('inventory', 'update'), auditMiddleware('inventory'), inventoryController.updateMedication);

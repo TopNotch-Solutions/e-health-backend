@@ -6,7 +6,12 @@ const {
 const { Op } = require('sequelize');
 const { success, created, error } = require('../utils/response');
 const notificationService = require('../services/notificationService');
-const stockAlertService = require('../services/stockAlertService');
+const {
+  enrichPrescription,
+  findInventoryForMedication,
+  resolveStockStatus,
+} = require('../services/pharmacyStockStatus');
+const billingChargeService = require('../services/billingChargeService');
 
 // Get pharmacy queue (pending prescriptions)
 exports.getQueue = async (req, res) => {
@@ -25,7 +30,11 @@ exports.getQueue = async (req, res) => {
       order: [['created_at', 'ASC']],
     });
 
-    return success(res, prescriptions);
+    const enriched = await Promise.all(
+      prescriptions.map((rx) => enrichPrescription(rx, req.user.facility_id))
+    );
+
+    return success(res, enriched);
   } catch (err) {
     console.error('Get pharmacy queue error:', err);
     return error(res, 'Failed to fetch pharmacy queue', 500);
@@ -47,7 +56,9 @@ exports.getPrescription = async (req, res) => {
     });
 
     if (!prescription) return error(res, 'Prescription not found', 404);
-    return success(res, prescription);
+
+    const enriched = await enrichPrescription(prescription, req.user.facility_id);
+    return success(res, enriched);
   } catch (err) {
     return error(res, 'Failed to fetch prescription', 500);
   }
@@ -82,6 +93,27 @@ exports.dispense = async (req, res) => {
       if (item.dispensed_at) continue;
 
       if (dispenseInfo.is_dispensed) {
+        const stockItem = await findInventoryForMedication(
+          item.medication_name,
+          req.user.facility_id,
+          t
+        );
+        const liveStock = resolveStockStatus({
+          found: !!stockItem,
+          quantityInStock: stockItem?.quantity_in_stock,
+          reorderLevel: stockItem?.reorder_level,
+          requiredQty: item.quantity,
+        });
+
+        if (!liveStock.can_dispense) {
+          await t.rollback();
+          return error(
+            res,
+            `${item.medication_name} is out of stock (${liveStock.quantity_in_stock} available, ${item.quantity} required)`,
+            400
+          );
+        }
+
         // Available and given to patient — deduct stock
         await PrescriptionItem.update({
           is_dispensed: true,
@@ -89,15 +121,6 @@ exports.dispense = async (req, res) => {
           dispensed_by: req.user.id,
           dispensed_at: new Date(),
         }, { where: { id: item.id }, transaction: t });
-
-        // Find and deduct from inventory
-        const stockItem = await PharmacyInventory.findOne({
-          where: {
-            medication_name: item.medication_name,
-            facility_id: req.user.facility_id,
-          },
-          transaction: t,
-        });
 
         if (stockItem) {
           const newQty = Math.max(0, stockItem.quantity_in_stock - item.quantity);
@@ -122,6 +145,13 @@ exports.dispense = async (req, res) => {
             });
           }
         }
+
+        await billingChargeService.chargeDispensedItem(
+          prescription.visit_id,
+          item,
+          req.user.facility_id,
+          t
+        );
 
         dispensedCount++;
       } else {
@@ -161,12 +191,28 @@ exports.dispense = async (req, res) => {
 
     await t.commit();
 
+    try {
+      notificationService.emitBillingCharge({
+        visit_id: prescription.visit_id,
+        prescription_id: id,
+        reason: 'medications_dispensed',
+      });
+    } catch (emitErr) {
+      console.error('Billing emit after dispense:', emitErr.message);
+    }
+
+    const prescriptionOut = await Prescription.findByPk(id, {
+      include: [{ association: 'items' }],
+    });
+    const enriched = await enrichPrescription(prescriptionOut, req.user.facility_id);
+
     return success(res, {
       prescription_id: id,
       status: newStatus,
       dispensed: dispensedTotal,
       unavailable: freshItems.filter((i) => !i.is_available && !i.is_dispensed).length,
       applied_in_request: dispensedCount,
+      prescription: enriched,
     }, 'Medications dispensed');
   } catch (err) {
     await t.rollback();

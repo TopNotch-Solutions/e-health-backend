@@ -1,47 +1,107 @@
 const { v4: uuidv4 } = require('uuid');
-const { MealPlan, DietPrescription, Admission, Visit, Patient, Bed, Ward, KitchenInventory, sequelize } = require('../models');
+const {
+  MealPlan,
+  DietPrescription,
+  Admission,
+  Patient,
+  Bed,
+  Ward,
+  sequelize,
+} = require('../models');
 const { Op } = require('sequelize');
-const { success, created, error } = require('../utils/response');
+const { success, error } = require('../utils/response');
+const {
+  KITCHEN_ADMISSION_STATUSES,
+  formatMealPlanRow,
+  todayDateString,
+} = require('../services/dietPrescriptionService');
 
-// Get today's meal plans for all admitted patients
-exports.getMealPlans = async (req, res) => {
-  try {
-    const { date } = req.query;
-    const mealDate = date || new Date().toISOString().slice(0, 10);
-
-    const plans = await MealPlan.findAll({
-      where: { meal_date: mealDate },
-      include: [{
+async function fetchMealPlansForFacility(facilityId, mealDate) {
+  const plans = await MealPlan.findAll({
+    where: { meal_date: mealDate },
+    include: [
+      {
         association: 'dietPrescription',
         where: { status: 'active' },
-        include: [{
-          model: Admission, as: 'admission',
-          where: { status: 'admitted' },
-          include: [
-            { model: Bed, as: 'bed', include: [{ model: Ward, as: 'ward', where: { facility_id: req.user.facility_id } }] },
-            { association: 'visit', include: [{ model: Patient, as: 'patient', attributes: ['id', 'first_name', 'last_name', 'patient_number'] }] },
-          ],
-        }],
-      }],
-      order: [['meal_type', 'ASC']],
+        required: true,
+        include: [
+          {
+            model: Admission,
+            as: 'admission',
+            where: { status: { [Op.in]: KITCHEN_ADMISSION_STATUSES } },
+            required: true,
+            include: [
+              {
+                model: Bed,
+                as: 'bed',
+                required: true,
+                include: [
+                  {
+                    model: Ward,
+                    as: 'ward',
+                    required: true,
+                    where: { facility_id: facilityId },
+                  },
+                ],
+              },
+              {
+                association: 'visit',
+                required: true,
+                include: [
+                  {
+                    model: Patient,
+                    as: 'patient',
+                    attributes: ['id', 'first_name', 'last_name', 'patient_number'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [
+      ['meal_type', 'ASC'],
+      [{ model: DietPrescription, as: 'dietPrescription' }, { model: Admission, as: 'admission' }, { model: Bed, as: 'bed' }, { model: Ward, as: 'ward' }, 'name', 'ASC'],
+      [{ model: DietPrescription, as: 'dietPrescription' }, { model: Admission, as: 'admission' }, { model: Bed, as: 'bed' }, 'room_number', 'ASC'],
+    ],
+  });
+
+  return plans;
+}
+
+function groupPlans(plans) {
+  const rows = plans.map(formatMealPlanRow);
+  return {
+    breakfast: rows.filter((p) => p.meal_type === 'breakfast'),
+    lunch: rows.filter((p) => p.meal_type === 'lunch'),
+    dinner: rows.filter((p) => p.meal_type === 'dinner'),
+    snack: rows.filter((p) => p.meal_type === 'snack'),
+    all: rows,
+  };
+}
+
+exports.getMealPlans = async (req, res) => {
+  try {
+    const facilityId = req.user.facility_id;
+    if (!facilityId) return error(res, 'Facility context required', 400);
+
+    const mealDate = req.query.date || todayDateString();
+    const plans = await fetchMealPlansForFacility(facilityId, mealDate);
+    const grouped = groupPlans(plans);
+
+    return success(res, {
+      date: mealDate,
+      plans: grouped,
+      orders: grouped.all,
+      total: grouped.all.length,
     });
-
-    // Group by meal type
-    const grouped = {
-      breakfast: plans.filter(p => p.meal_type === 'breakfast'),
-      lunch: plans.filter(p => p.meal_type === 'lunch'),
-      dinner: plans.filter(p => p.meal_type === 'dinner'),
-      snack: plans.filter(p => p.meal_type === 'snack'),
-    };
-
-    return success(res, { date: mealDate, plans: grouped, total: plans.length });
   } catch (err) {
     console.error('Get meal plans error:', err);
     return error(res, 'Failed to fetch meal plans', 500);
   }
 };
 
-// Mark meal as prepared
 exports.markPrepared = async (req, res) => {
   try {
     const plan = await MealPlan.findByPk(req.params.id);
@@ -54,7 +114,6 @@ exports.markPrepared = async (req, res) => {
   }
 };
 
-// Mark meal as dispensed (served to patient)
 exports.markDispensed = async (req, res) => {
   try {
     const plan = await MealPlan.findByPk(req.params.id);
@@ -68,53 +127,55 @@ exports.markDispensed = async (req, res) => {
   }
 };
 
-// Get meal plan summary/stats for kitchen dashboard
 exports.getDashboard = async (req, res) => {
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    const facilityId = req.user.facility_id;
+    if (!facilityId) return error(res, 'Facility context required', 400);
 
-    const plans = await MealPlan.findAll({
-      where: { meal_date: today },
-      include: [{
-        association: 'dietPrescription',
-        where: { status: 'active' },
-      }],
-    });
+    const today = todayDateString();
+    const plans = await fetchMealPlansForFacility(facilityId, today);
+    const rows = plans.map(formatMealPlanRow);
 
     const stats = {
       date: today,
-      total_meals: plans.length,
-      prepared: plans.filter(p => p.prepared).length,
-      dispensed: plans.filter(p => p.dispensed).length,
-      pending: plans.filter(p => !p.prepared).length,
+      total_meals: rows.length,
+      prepared: rows.filter((p) => p.prepared).length,
+      dispensed: rows.filter((p) => p.dispensed).length,
+      pending: rows.filter((p) => !p.prepared).length,
+      unique_patients: new Set(rows.map((p) => `${p.patient_number}-${p.ward_name}-${p.bed_number}`)).size,
       by_type: {
-        breakfast: { total: plans.filter(p => p.meal_type === 'breakfast').length, prepared: plans.filter(p => p.meal_type === 'breakfast' && p.prepared).length },
-        lunch: { total: plans.filter(p => p.meal_type === 'lunch').length, prepared: plans.filter(p => p.meal_type === 'lunch' && p.prepared).length },
-        dinner: { total: plans.filter(p => p.meal_type === 'dinner').length, prepared: plans.filter(p => p.meal_type === 'dinner' && p.prepared).length },
+        breakfast: {
+          total: rows.filter((p) => p.meal_type === 'breakfast').length,
+          prepared: rows.filter((p) => p.meal_type === 'breakfast' && p.prepared).length,
+        },
+        lunch: {
+          total: rows.filter((p) => p.meal_type === 'lunch').length,
+          prepared: rows.filter((p) => p.meal_type === 'lunch' && p.prepared).length,
+        },
+        dinner: {
+          total: rows.filter((p) => p.meal_type === 'dinner').length,
+          prepared: rows.filter((p) => p.meal_type === 'dinner' && p.prepared).length,
+        },
       },
     };
 
     return success(res, stats);
   } catch (err) {
+    console.error('Kitchen dashboard error:', err);
     return error(res, 'Failed to fetch dashboard', 500);
   }
 };
 
-// Generate meal plans for a new day (e.g., called by cron or manually)
 exports.generateDailyPlans = async (req, res) => {
   try {
     const { date } = req.body;
-    const targetDate = date || new Date(Date.now() + 86400000).toISOString().slice(0, 10); // tomorrow
+    const targetDate = date || new Date(Date.now() + 86400000).toISOString().slice(0, 10);
 
-    // Get all active diet prescriptions
     const activeDiets = await DietPrescription.findAll({
       where: {
         status: 'active',
         start_date: { [Op.lte]: targetDate },
-        [Op.or]: [
-          { end_date: null },
-          { end_date: { [Op.gte]: targetDate } },
-        ],
+        [Op.or]: [{ end_date: null }, { end_date: { [Op.gte]: targetDate } }],
       },
     });
 
@@ -123,7 +184,6 @@ exports.generateDailyPlans = async (req, res) => {
 
     for (const diet of activeDiets) {
       for (const mealType of meals) {
-        // Check if already exists
         const existing = await MealPlan.findOne({
           where: { diet_prescription_id: diet.id, meal_type: mealType, meal_date: targetDate },
         });

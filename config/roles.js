@@ -1,10 +1,16 @@
 const ROLES = {
   FRONT_OFFICE: 'front_office',
+  FRONT_OFFICE_SUPERVISOR: 'front_office_supervisor',
   NURSE: 'nurse',
+  NURSE_SUPERVISOR: 'nurse_supervisor',
   DOCTOR: 'doctor',
+  DOCTOR_SUPERVISOR: 'doctor_supervisor',
   PHARMACIST: 'pharmacist',
+  PHARMACY_SUPERVISOR: 'pharmacy_supervisor',
   LAB_TECHNICIAN: 'lab_technician',
+  LABORATORY_SUPERVISOR: 'laboratory_supervisor',
   RADIOLOGIST: 'radiologist',
+  RADIOLOGIST_SUPERVISOR: 'radiologist_supervisor',
   WARD_SUPERVISOR: 'ward_supervisor',
   WARD_STAFF: 'ward_staff',
   PORTER: 'porter',
@@ -43,6 +49,7 @@ const PERMISSIONS = {
   queue: ['create', 'read', 'update', 'push'],
   audit_log: ['read'],
   user: ['create', 'read', 'update', 'delete'],
+  facility: ['create', 'read', 'update'],
   analytics: ['read'],
 };
 
@@ -72,6 +79,7 @@ const ROLE_PERMISSIONS = {
     queue: ['create', 'read', 'update', 'push'],
     audit_log: ['read'],
     user: ['create', 'read', 'update', 'delete'],
+    facility: ['create', 'read', 'update'],
     analytics: ['read'],
   },
   [ROLES.FRONT_OFFICE]: {
@@ -79,12 +87,24 @@ const ROLE_PERMISSIONS = {
     queue: ['create', 'read', 'push'],
     referral: ['read'],
   },
+  [ROLES.FRONT_OFFICE_SUPERVISOR]: {
+    patient: ['read'],
+    queue: ['read'],
+    analytics: ['read'],
+  },
   [ROLES.NURSE]: {
     patient: ['read'],
     vitals: ['create', 'read', 'update', 'delete'],
     consultation: ['read'],
     lab_request: ['read', 'update'],
     queue: ['read', 'push', 'update'],
+  },
+  [ROLES.NURSE_SUPERVISOR]: {
+    patient: ['read'],
+    vitals: ['read'],
+    queue: ['read'],
+    analytics: ['read'],
+    billing: ['read', 'update'],
   },
   [ROLES.DOCTOR]: {
     patient: ['read'],
@@ -104,6 +124,19 @@ const ROLE_PERMISSIONS = {
     referral: ['create', 'read'],
     queue: ['read', 'push', 'update'],
   },
+  [ROLES.DOCTOR_SUPERVISOR]: {
+    patient: ['read'],
+    vitals: ['read'],
+    consultation: ['read'],
+    prescription: ['read'],
+    lab_request: ['read'],
+    lab_result: ['read'],
+    admission: ['read'],
+    analytics: ['read'],
+    inventory: ['read'],
+    queue: ['read'],
+    billing: ['read', 'update'],
+  },
   [ROLES.PHARMACIST]: {
     patient: ['read'],
     consultation: ['read'],
@@ -112,6 +145,13 @@ const ROLE_PERMISSIONS = {
     referral: ['create', 'read'],
     queue: ['read'],
   },
+  [ROLES.PHARMACY_SUPERVISOR]: {
+    patient: ['read'],
+    consultation: ['read'],
+    prescription: ['read'],
+    inventory: ['create', 'read', 'update'],
+    billing: ['read'],
+  },
   [ROLES.LAB_TECHNICIAN]: {
     patient: ['read'],
     consultation: ['read'],
@@ -119,11 +159,26 @@ const ROLE_PERMISSIONS = {
     lab_result: ['create', 'read', 'update', 'delete'],
     queue: ['read'],
   },
+  [ROLES.LABORATORY_SUPERVISOR]: {
+    patient: ['read'],
+    lab_request: ['read'],
+    lab_result: ['read'],
+    analytics: ['read'],
+    queue: ['read'],
+  },
   [ROLES.RADIOLOGIST]: {
     patient: ['read'],
     sonar_request: ['read', 'update'],
     sonar_result: ['create', 'read', 'update', 'delete'],
     queue: ['read'],
+  },
+  [ROLES.RADIOLOGIST_SUPERVISOR]: {
+    patient: ['read'],
+    sonar_request: ['read'],
+    sonar_result: ['read'],
+    analytics: ['read'],
+    queue: ['read'],
+    billing: ['read', 'update'],
   },
   [ROLES.WARD_SUPERVISOR]: {
     patient: ['read'],
@@ -134,6 +189,7 @@ const ROLE_PERMISSIONS = {
     admission: ['read', 'update'],
     transport: ['read'],
     diet: ['read'],
+    billing: ['read', 'update'],
   },
   [ROLES.WARD_STAFF]: {
     patient: ['read'],
@@ -163,7 +219,7 @@ const ROLE_PERMISSIONS = {
   [ROLES.BILLING_CLERK]: {
     patient: ['read'],
     billing: ['create', 'read', 'update'],
-    revenue: ['read'],
+    revenue: ['read', 'create', 'update'],
     queue: ['read'],
   },
   [ROLES.REVENUE_OFFICER]: {

@@ -12,6 +12,7 @@ const {
 const { Op } = require('sequelize');
 const { success, created, error } = require('../utils/response');
 const notificationService = require('../services/notificationService');
+const { getSupervisorMetrics } = require('../services/wardSupervisorMetricsService');
 
 // Get all wards with bed summary
 exports.getAll = async (req, res) => {
@@ -43,6 +44,21 @@ exports.getAll = async (req, res) => {
   } catch (err) {
     console.error('Get wards error:', err);
     return error(res, 'Failed to fetch wards', 500);
+  }
+};
+
+// Ward supervisor live analytics (registrations, admissions, charts)
+exports.getSupervisorMetrics = async (req, res) => {
+  try {
+    const facilityId = req.user.facility_id;
+    if (!facilityId) {
+      return error(res, 'Facility context required', 400);
+    }
+    const metrics = await getSupervisorMetrics(facilityId);
+    return success(res, metrics);
+  } catch (err) {
+    console.error('Supervisor metrics error:', err);
+    return error(res, 'Failed to fetch supervisor metrics', 500);
   }
 };
 

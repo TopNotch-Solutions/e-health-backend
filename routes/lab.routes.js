@@ -1,10 +1,17 @@
 const router = require('express').Router();
 const labController = require('../controllers/lab.controller');
+const clinicalSupervisorController = require('../controllers/clinicalSupervisor.controller');
 const { authenticate } = require('../middleware/auth');
 const { authorize } = require('../middleware/rbac');
 const { auditMiddleware } = require('../middleware/audit');
 
 router.use(authenticate);
+
+router.get(
+  '/supervisor-metrics',
+  authorize('analytics', 'read'),
+  clinicalSupervisorController.getLaboratorySupervisorMetrics
+);
 
 // Hospital test catalog (ordering & results UI)
 router.get('/tests', authorize('lab_request', 'read'), labController.getTestCatalog);

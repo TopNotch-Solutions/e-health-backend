@@ -10,6 +10,7 @@ module.exports = (sequelize, DataTypes) => {
     reorder_level: { type: DataTypes.INTEGER, defaultValue: 10 },
     unit: { type: DataTypes.STRING(50) },
     expiry_date: { type: DataTypes.DATEONLY },
+    unit_price: { type: DataTypes.DECIMAL(10, 2), allowNull: false, defaultValue: 0 },
   }, {
     tableName: 'pharmacy_inventory',
     timestamps: false,

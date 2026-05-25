@@ -222,6 +222,12 @@ exports.submitResultsAndReturn = async (req, res) => {
       console.error('Lab submit socket emit error:', emitErr.message);
     }
 
+    notificationService.emitLaboratoryActivity({
+      labRequestId: id,
+      processedBy: req.user.id,
+      action: 'results_submitted',
+    });
+
     return success(
       res,
       { lab_request_id: id, doctor_queue_entry: doctorQueueEntry },

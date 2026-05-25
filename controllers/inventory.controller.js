@@ -3,8 +3,84 @@ const { PharmacyInventory, StockTransaction, KitchenInventory, sequelize } = req
 const { Op } = require('sequelize');
 const { success, created, error, paginated } = require('../utils/response');
 const notificationService = require('../services/notificationService');
+const {
+  getSupervisorMetrics,
+  getRecentPrescriptions,
+} = require('../services/pharmacySupervisorMetricsService');
+const {
+  findInventoryForMedication,
+  resolveStockStatus,
+} = require('../services/pharmacyStockStatus');
+const {
+  listActiveCatalog,
+  listCatalogForPrescribing,
+  getCatalogEntryById,
+  findCatalogByName,
+} = require('../services/medicationCatalogService');
+
+function assertFacilityInventoryItem(item, facilityId, res) {
+  if (!item || item.facility_id !== facilityId) {
+    return error(res, 'Item not found', 404);
+  }
+  return null;
+}
+
+function maybeEmitLowStock(item) {
+  if (item.quantity_in_stock <= item.reorder_level) {
+    const payload = {
+      medication_name: item.medication_name,
+      quantity_remaining: item.quantity_in_stock,
+      reorder_level: item.reorder_level,
+      inventory_id: item.id,
+    };
+    notificationService.emitStockAlert(payload);
+    notificationService.emitPharmacyInventoryUpdate({ type: 'low_stock', ...payload });
+  }
+}
 
 // === PHARMACY INVENTORY ===
+
+exports.checkMedicationStock = async (req, res) => {
+  try {
+    const { medication_name, quantity = 1 } = req.query;
+    if (!medication_name || !String(medication_name).trim()) {
+      return error(res, 'medication_name is required', 400);
+    }
+
+    const inv = await findInventoryForMedication(
+      String(medication_name).trim(),
+      req.user.facility_id
+    );
+    const status = resolveStockStatus({
+      found: !!inv,
+      quantityInStock: inv?.quantity_in_stock,
+      reorderLevel: inv?.reorder_level,
+      requiredQty: quantity,
+    });
+
+    return success(res, {
+      medication_name: String(medication_name).trim(),
+      ...status,
+    });
+  } catch (err) {
+    console.error('Check medication stock error:', err);
+    return error(res, 'Failed to check stock', 500);
+  }
+};
+
+exports.getMedicationCatalog = async (req, res) => {
+  try {
+    const facilityId = req.user.facility_id;
+    const availableOnly = req.query.available === 'true' || req.query.available === '1';
+    const catalog = availableOnly
+      ? await listActiveCatalog({ facilityId, availableOnly: true })
+      : await listCatalogForPrescribing(facilityId);
+    return success(res, catalog);
+  } catch (err) {
+    console.error('Medication catalog error:', err);
+    return error(res, 'Failed to load medication catalog', 500);
+  }
+};
 
 // Get all pharmacy inventory
 exports.getPharmacyInventory = async (req, res) => {
@@ -57,22 +133,92 @@ exports.getAlerts = async (req, res) => {
   }
 };
 
-// Add new medication to inventory
+exports.getSupervisorMetrics = async (req, res) => {
+  try {
+    const facilityId = req.user.facility_id;
+    if (!facilityId) return error(res, 'Facility context required', 400);
+    const metrics = await getSupervisorMetrics(facilityId);
+    return success(res, metrics);
+  } catch (err) {
+    console.error('Pharmacy supervisor metrics error:', err);
+    return error(res, 'Failed to fetch supervisor metrics', 500);
+  }
+};
+
+exports.getRecentPrescriptions = async (req, res) => {
+  try {
+    const facilityId = req.user.facility_id;
+    if (!facilityId) return error(res, 'Facility context required', 400);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 25, 50);
+    const rows = await getRecentPrescriptions(facilityId, limit);
+    return success(res, rows);
+  } catch (err) {
+    console.error('Recent prescriptions error:', err);
+    return error(res, 'Failed to fetch prescriptions', 500);
+  }
+};
+
+// Add new medication to inventory (from master catalog)
 exports.addMedication = async (req, res) => {
   try {
-    const { medication_name, generic_name, category, quantity_in_stock, reorder_level, unit, expiry_date } = req.body;
-    if (!medication_name) return error(res, 'medication_name is required', 400);
+    const {
+      catalog_id,
+      medication_name,
+      quantity_in_stock,
+      reorder_level,
+      expiry_date,
+    } = req.body;
 
+    const facilityId = req.user.facility_id;
+    let catalogEntry = null;
+    if (catalog_id) {
+      catalogEntry = await getCatalogEntryById(catalog_id);
+    } else if (medication_name) {
+      catalogEntry = await findCatalogByName(medication_name);
+    }
+    if (!catalogEntry) {
+      return error(res, 'Select a medication from the catalog', 400);
+    }
+
+    const existing = await PharmacyInventory.findOne({
+      where: {
+        facility_id: facilityId,
+        medication_name: catalogEntry.medication_name,
+      },
+    });
+    if (existing) {
+      return error(res, 'This medication is already in facility inventory', 409);
+    }
+
+    const qty = parseInt(quantity_in_stock, 10) || 0;
+    const unitPrice = parseFloat(catalogEntry.unit_price) || 0;
     const item = await PharmacyInventory.create({
       id: uuidv4(),
-      facility_id: req.user.facility_id,
-      medication_name,
-      generic_name: generic_name || null,
-      category: category || null,
-      quantity_in_stock: quantity_in_stock || 0,
+      facility_id: facilityId,
+      medication_name: catalogEntry.medication_name,
+      generic_name: catalogEntry.generic_name,
+      category: catalogEntry.category || null,
+      quantity_in_stock: qty,
       reorder_level: reorder_level || 10,
-      unit: unit || 'units',
+      unit: 'units',
       expiry_date: expiry_date || null,
+      unit_price: unitPrice,
+    });
+
+    if (qty > 0) {
+      await StockTransaction.create({
+        id: uuidv4(),
+        inventory_id: item.id,
+        type: 'received',
+        quantity: qty,
+        performed_by: req.user.id,
+      });
+    }
+    maybeEmitLowStock(item);
+    notificationService.emitPharmacyInventoryUpdate({
+      type: 'medication_added',
+      inventory_id: item.id,
+      medication_name: item.medication_name,
     });
 
     return created(res, item, 'Medication added to inventory');
@@ -91,20 +237,34 @@ exports.receiveStock = async (req, res) => {
 
     const item = await PharmacyInventory.findByPk(id, { transaction: t });
     if (!item) { await t.rollback(); return error(res, 'Item not found', 404); }
+    if (item.facility_id !== req.user.facility_id) {
+      await t.rollback();
+      return error(res, 'Item not found', 404);
+    }
 
+    const qty = parseInt(quantity, 10);
     await item.update({
-      quantity_in_stock: item.quantity_in_stock + parseInt(quantity),
+      quantity_in_stock: item.quantity_in_stock + qty,
     }, { transaction: t });
 
     await StockTransaction.create({
       id: uuidv4(),
       inventory_id: item.id,
       type: 'received',
-      quantity: parseInt(quantity),
+      quantity: qty,
       performed_by: req.user.id,
     }, { transaction: t });
 
     await t.commit();
+    await item.reload();
+    maybeEmitLowStock(item);
+    notificationService.emitPharmacyInventoryUpdate({
+      type: 'stock_received',
+      inventory_id: item.id,
+      medication_name: item.medication_name,
+      quantity_added: qty,
+      quantity_in_stock: item.quantity_in_stock,
+    });
     return success(res, item, 'Stock received');
   } catch (err) {
     await t.rollback();
@@ -116,9 +276,18 @@ exports.receiveStock = async (req, res) => {
 exports.updateMedication = async (req, res) => {
   try {
     const item = await PharmacyInventory.findByPk(req.params.id);
-    if (!item) return error(res, 'Item not found', 404);
+    const denied = assertFacilityInventoryItem(item, req.user.facility_id, res);
+    if (denied) return denied;
 
-    const allowed = ['medication_name', 'generic_name', 'category', 'reorder_level', 'unit', 'expiry_date'];
+    const allowed = [
+      'medication_name',
+      'generic_name',
+      'category',
+      'reorder_level',
+      'unit',
+      'expiry_date',
+      'unit_price',
+    ];
     const updates = {};
     for (const f of allowed) {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
@@ -156,6 +325,10 @@ exports.adjustStock = async (req, res) => {
 
     const item = await PharmacyInventory.findByPk(id, { transaction: t });
     if (!item) { await t.rollback(); return error(res, 'Item not found', 404); }
+    if (item.facility_id !== req.user.facility_id) {
+      await t.rollback();
+      return error(res, 'Item not found', 404);
+    }
 
     const newQty = type === 'expired'
       ? Math.max(0, item.quantity_in_stock - parseInt(quantity))
@@ -172,6 +345,13 @@ exports.adjustStock = async (req, res) => {
     }, { transaction: t });
 
     await t.commit();
+    await item.reload();
+    maybeEmitLowStock(item);
+    notificationService.emitPharmacyInventoryUpdate({
+      type: 'stock_adjusted',
+      inventory_id: item.id,
+      medication_name: item.medication_name,
+    });
     return success(res, item, 'Stock adjusted');
   } catch (err) {
     await t.rollback();

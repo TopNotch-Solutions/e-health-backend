@@ -3,6 +3,7 @@ const { Vital, Visit, Patient, QueueEntry, sequelize } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
 const { getIO } = require('../socket');
+const { emitNurseActivity } = require('../services/notificationService');
 
 const VITAL_FIELDS = [
   'temperature', 'blood_pressure_systolic', 'blood_pressure_diastolic',
@@ -38,6 +39,8 @@ exports.create = async (req, res) => {
       recorded_by: req.user.id,
       ...pickVitalAttributes(req.body),
     });
+
+    emitNurseActivity({ visitId: visit_id, vitalId: vital.id, recordedBy: req.user.id, action: 'vitals_recorded' });
 
     return created(res, vital, 'Vitals recorded');
   } catch (err) {
@@ -119,6 +122,8 @@ exports.createAndPush = async (req, res) => {
     } catch (emitErr) {
       console.error('Nurse push socket emit error:', emitErr.message);
     }
+
+    emitNurseActivity({ visitId: visit_id, vitalId: vital.id, recordedBy: req.user.id, action: 'push_to_doctor' });
 
     return created(res, { vital, nextEntry: result.nextEntry }, 'Vitals recorded and patient pushed to doctor');
   } catch (err) {

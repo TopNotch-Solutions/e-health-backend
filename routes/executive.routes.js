@@ -30,4 +30,7 @@ router.get('/mortality', executiveController.getMortalityStats);
 // Admission & discharge analytics
 router.get('/admissions', executiveController.getAdmissionStats);
 
+// Unified read-only analytics panel (all modules — charts + KPIs)
+router.get('/panel/:key', executiveController.getAnalyticsPanel);
+
 module.exports = router;

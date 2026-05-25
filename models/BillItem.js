@@ -4,7 +4,10 @@ module.exports = (sequelize, DataTypes) => {
     id: { type: DataTypes.CHAR(36), primaryKey: true },
     bill_id: { type: DataTypes.CHAR(36), allowNull: false },
     description: { type: DataTypes.STRING(255), allowNull: false },
-    category: { type: DataTypes.ENUM('consultation', 'medication', 'lab', 'sonar', 'ward', 'other'), allowNull: false },
+    category: {
+      type: DataTypes.ENUM('consultation', 'medication', 'lab', 'sonar', 'ward', 'nursing', 'other'),
+      allowNull: false,
+    },
     amount: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
     reference_id: { type: DataTypes.CHAR(36) },
   }, {

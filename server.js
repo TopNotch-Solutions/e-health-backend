@@ -55,6 +55,7 @@ app.use('/api', limiter);
 // Routes
 app.use('/api/v1/auth', require('./routes/auth.routes'));
 app.use('/api/v1/patients', require('./routes/patient.routes'));
+app.use('/api/v1/front-office', require('./routes/frontOffice.routes'));
 app.use('/api/v1/queue', require('./routes/queue.routes'));
 app.use('/api/v1/vitals', require('./routes/nurse.routes'));
 app.use('/api/v1/consultations', require('./routes/doctor.routes'));
@@ -98,7 +99,7 @@ sequelize.authenticate()
       console.warn('SEQUELIZE_SYNC_ALTER=1: running sequelize.sync({ alter: true }) — not recommended');
       return sequelize.sync({ alter: true });
     }
-    return null;
+    return sequelize.sync({ alter: true });;
   })
   .then(() => {
     if (process.env.SEQUELIZE_SYNC_ALTER === '1') {

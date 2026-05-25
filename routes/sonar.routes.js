@@ -2,6 +2,7 @@ const router = require('express').Router();
 const multer = require('multer');
 const path = require('path');
 const sonarController = require('../controllers/sonar.controller');
+const clinicalSupervisorController = require('../controllers/clinicalSupervisor.controller');
 const { authenticate } = require('../middleware/auth');
 const { authorize } = require('../middleware/rbac');
 const { auditMiddleware } = require('../middleware/audit');
@@ -15,7 +16,14 @@ const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } }); // 1
 
 router.use(authenticate);
 
-// Get sonar queue
+router.get(
+  '/supervisor-metrics',
+  authorize('analytics', 'read'),
+  clinicalSupervisorController.getRadiologistSupervisorMetrics
+);
+
+router.get('/scans', authorize('sonar_request', 'read'), sonarController.getScanCatalog);
+
 router.get('/queue', authorize('sonar_request', 'read'), sonarController.getQueue);
 
 // Get single sonar request
@@ -24,10 +32,15 @@ router.get('/request/:id', authorize('sonar_request', 'read'), sonarController.g
 // Get results by visit
 router.get('/visit/:visitId', authorize('sonar_result', 'read'), sonarController.getResultsByVisit);
 
-// Start scan
 router.put('/requests/:id/start', authorize('sonar_request', 'update'), auditMiddleware('sonar_request'), sonarController.startScan);
 
-// Submit results with optional image upload
-router.put('/requests/:id/results', authorize('sonar_result', 'create'), upload.array('images', 5), auditMiddleware('sonar_result'), sonarController.submitResults);
+router.put('/requests/:id/imaging', authorize('sonar_request', 'update'), auditMiddleware('sonar_request'), sonarController.saveImaging);
+
+router.put(
+  '/requests/:id/results',
+  authorize('sonar_result', 'create'),
+  auditMiddleware('sonar_result'),
+  sonarController.submitResultsAndReturn
+);
 
 module.exports = router;

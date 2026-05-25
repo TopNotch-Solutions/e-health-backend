@@ -5,6 +5,19 @@ const {
 } = require('../models');
 const { Op } = require('sequelize');
 const { success, error } = require('../utils/response');
+const { getExecutivePanelPayload } = require('../services/executiveModuleAnalyticsService');
+
+// Unified read-only panel for executive UI (sidebar modules)
+exports.getAnalyticsPanel = async (req, res) => {
+  try {
+    const payload = await getExecutivePanelPayload(req.params.key);
+    if (!payload) return error(res, 'Unknown analytics module', 404);
+    return success(res, payload);
+  } catch (err) {
+    console.error('Executive panel error:', err);
+    return error(res, 'Failed to fetch analytics panel', 500);
+  }
+};
 
 // Executive Overview Dashboard - all key metrics
 exports.getOverview = async (req, res) => {

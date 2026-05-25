@@ -15,6 +15,9 @@ router.get('/beds/available', authorize('bed', 'read'), wardController.getAvaila
 // Ward staff arrival queue (must be before /:id routes)
 router.get('/staff-queue', authorize('admission', 'read'), wardController.getStaffQueue);
 
+// Ward supervisor analytics (must be before /:id routes)
+router.get('/supervisor-metrics', authorize('ward', 'read'), wardController.getSupervisorMetrics);
+
 // Get all current admissions
 router.get('/admissions', authorize('admission', 'read'), wardController.getAdmissions);
 
