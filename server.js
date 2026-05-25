@@ -10,6 +10,8 @@ const { initSocket } = require('./socket');
 const { sequelize } = require('./models');
 
 const app = express();
+// Behind nginx / load balancer (required for express-rate-limit with X-Forwarded-For)
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // Initialize Socket.io
