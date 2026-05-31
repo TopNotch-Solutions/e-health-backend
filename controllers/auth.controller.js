@@ -32,14 +32,22 @@ exports.login = async (req, res) => {
       where: { email },
       include: [{ model: Role, as: 'role' }],
     });
-    console.log('User found:', user ? user : 'No user');
-    if (!user || !user.is_active) {
+
+    if (!user) {
       return error(res, 'Invalid credentials', 401);
     }
 
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return error(res, 'Invalid credentials', 401);
+    }
+
+    if (!user.is_active) {
+      return error(
+        res,
+        'Your account has been deactivated. Contact your system administrator.',
+        403
+      );
     }
 
     const tokens = generateTokens(user);
@@ -101,8 +109,17 @@ exports.refresh = async (req, res) => {
       include: [{ model: Role, as: 'role' }],
     });
 
-    if (!user || !user.is_active) {
-      return error(res, 'User not found', 401);
+    if (!user) {
+      return error(res, 'Invalid or expired refresh token', 401);
+    }
+
+    if (!user.is_active) {
+      await storedToken.update({ revoked: true });
+      return error(
+        res,
+        'Your account has been deactivated. Contact your system administrator.',
+        403
+      );
     }
 
     // Revoke old token and issue new ones

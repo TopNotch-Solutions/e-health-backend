@@ -1,5 +1,7 @@
 const ROLES = {
+  // Shared (state hospital + clinic)
   FRONT_OFFICE: 'front_office',
+  // State hospital roles
   FRONT_OFFICE_SUPERVISOR: 'front_office_supervisor',
   NURSE: 'nurse',
   NURSE_SUPERVISOR: 'nurse_supervisor',
@@ -23,6 +25,20 @@ const ROLES = {
   DATA_ANALYST: 'data_analyst',
   SYSTEM_ADMIN: 'system_admin',
   EXECUTIVE: 'executive',
+  // Clinic-only roles (see config/clinicRoles.js)
+  PARAMETER_NURSE: 'parameter_nurse',
+  SCREENING_NURSE: 'screening_nurse',
+  ANC_NURSE: 'anc_nurse',
+  PEDIATRIC_CORNER: 'pediatric_corner',
+  PREP_SUITE: 'prep_suite',
+  PAP_SMEAR_SUITE: 'pap_smear_suite',
+  FAMILY_PLANNER: 'family_planner',
+  HIV_TESTER: 'hiv_tester',
+  EMERGENCY_UNIT_NURSE: 'emergency_unit_nurse',
+  EMERGENCY_UNIT_DOCTOR: 'emergency_unit_doctor',
+  MASTER_DOCTOR: 'master_doctor',
+  BOOKING_ROOM: 'booking_room',
+  ART_NURSE: 'art_nurse',
 };
 
 const PERMISSIONS = {
@@ -141,7 +157,7 @@ const ROLE_PERMISSIONS = {
     patient: ['read'],
     consultation: ['read'],
     prescription: ['read', 'update'],
-    inventory: ['create', 'read', 'update', 'delete'],
+    inventory: ['read'],
     referral: ['create', 'read'],
     queue: ['read'],
   },
@@ -250,5 +266,32 @@ const ROLE_PERMISSIONS = {
     mortuary: ['read'],
   },
 };
+
+// Clinic nurse roles share the same clinical permissions as ward nurses.
+const CLINIC_NURSE_PERMISSIONS = ROLE_PERMISSIONS[ROLES.NURSE];
+const CLINIC_DOCTOR_PERMISSIONS = ROLE_PERMISSIONS[ROLES.DOCTOR];
+const CLINIC_FRONT_OFFICE_PERMISSIONS = ROLE_PERMISSIONS[ROLES.FRONT_OFFICE];
+
+[
+  ROLES.PARAMETER_NURSE,
+  ROLES.SCREENING_NURSE,
+  ROLES.ANC_NURSE,
+  ROLES.PEDIATRIC_CORNER,
+  ROLES.PREP_SUITE,
+  ROLES.PAP_SMEAR_SUITE,
+  ROLES.HIV_TESTER,
+  ROLES.EMERGENCY_UNIT_NURSE,
+  ROLES.ART_NURSE,
+].forEach((role) => {
+  ROLE_PERMISSIONS[role] = CLINIC_NURSE_PERMISSIONS;
+});
+
+ROLE_PERMISSIONS[ROLES.EMERGENCY_UNIT_DOCTOR] = CLINIC_DOCTOR_PERMISSIONS;
+ROLE_PERMISSIONS[ROLES.MASTER_DOCTOR] = CLINIC_DOCTOR_PERMISSIONS;
+ROLE_PERMISSIONS[ROLES.FAMILY_PLANNER] = {
+  patient: ['read', 'update'],
+  queue: ['read', 'push'],
+};
+ROLE_PERMISSIONS[ROLES.BOOKING_ROOM] = CLINIC_FRONT_OFFICE_PERMISSIONS;
 
 module.exports = { ROLES, PERMISSIONS, ROLE_PERMISSIONS };

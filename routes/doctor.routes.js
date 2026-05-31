@@ -37,4 +37,18 @@ router.put('/visits/:id/discharge', authorize('consultation', 'update'), auditMi
 // Diet prescriptions
 router.post('/diet-prescriptions', authorize('diet', 'create'), auditMiddleware('diet'), doctorController.prescribeDiet);
 
+// Clinic doctor dispositions
+router.post(
+  '/clinic/follow-up',
+  authorize('consultation', 'create'),
+  auditMiddleware('consultation'),
+  doctorController.clinicScheduleFollowUp
+);
+router.post(
+  '/clinic/booking-room',
+  authorize('consultation', 'create'),
+  auditMiddleware('consultation'),
+  doctorController.clinicTransferBookingRoom
+);
+
 module.exports = router;

@@ -101,7 +101,8 @@ sequelize.authenticate()
       console.warn('SEQUELIZE_SYNC_ALTER=1: running sequelize.sync({ alter: true }) — not recommended');
       return sequelize.sync({ alter: true });
     }
-    return sequelize.sync({ alter: true });;
+    // Schema is managed by migrations (`npm run db:migrate`). Do not alter on every startup.
+    return Promise.resolve();
   })
   .then(() => {
     if (process.env.SEQUELIZE_SYNC_ALTER === '1') {

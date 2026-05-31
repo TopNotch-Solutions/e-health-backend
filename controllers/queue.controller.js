@@ -1,4 +1,5 @@
 const queueService = require('../services/queueService');
+const { ALL_QUEUE_DEPARTMENTS } = require('../config/clinicQueueDepartments');
 const { success, error } = require('../utils/response');
 const { getIO } = require('../socket');
 
@@ -109,10 +110,33 @@ exports.skip = async (req, res) => {
   }
 };
 
+// Release patient back to waiting queue (cancel active session)
+exports.release = async (req, res) => {
+  try {
+    const entry = await queueService.releaseEntry(req.params.id, req.user.id);
+
+    const io = getIO();
+    const entries = await queueService.getQueue(entry.department, req.user.facility_id);
+    io.to(`room:${entry.department}`).emit('queue:refresh', {
+      department: entry.department,
+      entries,
+    });
+    io.to(`room:${entry.department}`).emit('queue:patient_moved', {
+      entryId: entry.id,
+      status: 'waiting',
+      department: entry.department,
+    });
+
+    return success(res, entry, 'Patient returned to queue');
+  } catch (err) {
+    return error(res, err.message || 'Failed to release patient', 400);
+  }
+};
+
 // Get queue stats for all departments
 exports.stats = async (req, res) => {
   try {
-    const departments = ['nurse', 'doctor', 'pharmacy', 'lab', 'sonar', 'billing', 'transport'];
+    const departments = ALL_QUEUE_DEPARTMENTS;
     const stats = await Promise.all(
       departments.map((dept) => queueService.getQueueStats(dept, req.user.facility_id))
     );

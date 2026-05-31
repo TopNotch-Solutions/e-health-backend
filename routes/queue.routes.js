@@ -24,4 +24,7 @@ router.put('/:id/complete', authorize('queue', 'update'), auditMiddleware('queue
 // Skip a patient
 router.put('/:id/skip', authorize('queue', 'update'), auditMiddleware('queue'), queueController.skip);
 
+// Release back to waiting queue
+router.put('/:id/release', authorize('queue', 'update'), auditMiddleware('queue'), queueController.release);
+
 module.exports = router;

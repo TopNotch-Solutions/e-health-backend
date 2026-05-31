@@ -11,4 +11,16 @@ router.get(
   frontOfficeController.getSupervisorMetrics
 );
 
+router.get(
+  '/routing-options',
+  authorize('patient', 'read'),
+  frontOfficeController.getRoutingOptions
+);
+
+router.get(
+  '/my-registrations',
+  authorize('patient', 'read'),
+  frontOfficeController.getMyRegistrations
+);
+
 module.exports = router;

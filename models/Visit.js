@@ -24,6 +24,7 @@ module.exports = (sequelize, DataTypes) => {
     Visit.belongsTo(models.User, { foreignKey: 'created_by', as: 'createdBy' });
     Visit.hasMany(models.QueueEntry, { foreignKey: 'visit_id', as: 'queueEntries' });
     Visit.hasOne(models.Vital, { foreignKey: 'visit_id', as: 'vitals' });
+    Visit.hasOne(models.ScreeningAssessment, { foreignKey: 'visit_id', as: 'screeningAssessment' });
     Visit.hasMany(models.Consultation, { foreignKey: 'visit_id', as: 'consultations' });
     Visit.hasMany(models.Prescription, { foreignKey: 'visit_id', as: 'prescriptions' });
     Visit.hasMany(models.LabRequest, { foreignKey: 'visit_id', as: 'labRequests' });

@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const inventoryController = require('../controllers/inventory.controller');
 const { authenticate } = require('../middleware/auth');
-const { authorize } = require('../middleware/rbac');
+const { authorize, allowRoles } = require('../middleware/rbac');
 const { auditMiddleware } = require('../middleware/audit');
 
 router.use(authenticate);
@@ -13,6 +13,22 @@ router.get('/pharmacy/stock-status', authorize('inventory', 'read'), inventoryCo
 router.get('/pharmacy/alerts', authorize('inventory', 'read'), inventoryController.getAlerts);
 router.get('/pharmacy/supervisor-metrics', authorize('inventory', 'read'), inventoryController.getSupervisorMetrics);
 router.get('/pharmacy/recent-prescriptions', authorize('prescription', 'read'), inventoryController.getRecentPrescriptions);
+router.get(
+  '/pharmacy/pending-receipts',
+  allowRoles('pharmacy_supervisor'),
+  inventoryController.getPendingReceipts
+);
+router.get(
+  '/pharmacy/confirmed-receipts',
+  allowRoles('pharmacy_supervisor'),
+  inventoryController.getConfirmedReceipts
+);
+router.post(
+  '/pharmacy/receipts/:transactionId/confirm',
+  allowRoles('pharmacy_supervisor'),
+  auditMiddleware('inventory'),
+  inventoryController.confirmReceipt
+);
 router.post('/pharmacy', authorize('inventory', 'create'), auditMiddleware('inventory'), inventoryController.addMedication);
 router.post('/pharmacy/:id/receive', authorize('inventory', 'update'), auditMiddleware('inventory'), inventoryController.receiveStock);
 router.put('/pharmacy/:id', authorize('inventory', 'update'), auditMiddleware('inventory'), inventoryController.updateMedication);

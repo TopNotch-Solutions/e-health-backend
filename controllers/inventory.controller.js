@@ -25,6 +25,42 @@ function assertFacilityInventoryItem(item, facilityId, res) {
   return null;
 }
 
+function formatUserName(user) {
+  if (!user) return null;
+  return [user.first_name, user.last_name].filter(Boolean).join(' ').trim() || null;
+}
+
+function serializeReceipt(tx) {
+  const json = tx.toJSON ? tx.toJSON() : tx;
+  return {
+    ...json,
+    recorded_by_name: formatUserName(json.performedBy),
+    confirmed_by_name: formatUserName(json.confirmedBy),
+    medication_name: json.inventory?.medication_name || null,
+  };
+}
+
+const receiptInclude = [
+  {
+    model: PharmacyInventory,
+    as: 'inventory',
+    attributes: ['id', 'medication_name', 'generic_name', 'facility_id', 'quantity_in_stock'],
+  },
+  { association: 'performedBy', attributes: ['id', 'first_name', 'last_name'] },
+  { association: 'confirmedBy', attributes: ['id', 'first_name', 'last_name'] },
+];
+
+async function createPendingReceipt({ inventoryId, quantity, userId, transaction }) {
+  return StockTransaction.create({
+    id: uuidv4(),
+    inventory_id: inventoryId,
+    type: 'received',
+    quantity,
+    status: 'pending',
+    performed_by: userId,
+  }, { transaction });
+}
+
 function maybeEmitLowStock(item) {
   if (item.quantity_in_stock <= item.reorder_level) {
     const payload = {
@@ -198,20 +234,19 @@ exports.addMedication = async (req, res) => {
       medication_name: catalogEntry.medication_name,
       generic_name: catalogEntry.generic_name,
       category: catalogEntry.category || null,
-      quantity_in_stock: qty,
+      quantity_in_stock: 0,
       reorder_level: reorder_level || 10,
       unit: 'units',
       expiry_date: expiry_date || null,
       unit_price: unitPrice,
     });
 
+    let pendingReceipt = null;
     if (qty > 0) {
-      await StockTransaction.create({
-        id: uuidv4(),
-        inventory_id: item.id,
-        type: 'received',
+      pendingReceipt = await createPendingReceipt({
+        inventoryId: item.id,
         quantity: qty,
-        performed_by: req.user.id,
+        userId: req.user.id,
       });
     }
     maybeEmitLowStock(item);
@@ -219,20 +254,25 @@ exports.addMedication = async (req, res) => {
       type: 'medication_added',
       inventory_id: item.id,
       medication_name: item.medication_name,
+      pending_quantity: qty,
     });
 
-    return created(res, item, 'Medication added to inventory');
+    const message = qty > 0
+      ? 'Medication added — stock pending confirmation by another pharmacy supervisor'
+      : 'Medication added to inventory';
+
+    return created(res, { item, pendingReceipt }, message);
   } catch (err) {
     return error(res, 'Failed to add medication', 500);
   }
 };
 
-// Receive stock (increase quantity)
+// Record incoming stock (pending until confirmed by a different staff member)
 exports.receiveStock = async (req, res) => {
   const t = await sequelize.transaction();
   try {
     const { id } = req.params;
-    const { quantity, notes } = req.body;
+    const { quantity } = req.body;
     if (!quantity || quantity <= 0) return error(res, 'Valid quantity is required', 400);
 
     const item = await PharmacyInventory.findByPk(id, { transaction: t });
@@ -243,32 +283,142 @@ exports.receiveStock = async (req, res) => {
     }
 
     const qty = parseInt(quantity, 10);
-    await item.update({
-      quantity_in_stock: item.quantity_in_stock + qty,
-    }, { transaction: t });
-
-    await StockTransaction.create({
-      id: uuidv4(),
-      inventory_id: item.id,
-      type: 'received',
+    const pendingReceipt = await createPendingReceipt({
+      inventoryId: item.id,
       quantity: qty,
-      performed_by: req.user.id,
-    }, { transaction: t });
+      userId: req.user.id,
+      transaction: t,
+    });
 
     await t.commit();
-    await item.reload();
-    maybeEmitLowStock(item);
+
+    const loaded = await StockTransaction.findByPk(pendingReceipt.id, { include: receiptInclude });
+
     notificationService.emitPharmacyInventoryUpdate({
-      type: 'stock_received',
+      type: 'stock_receipt_pending',
       inventory_id: item.id,
       medication_name: item.medication_name,
-      quantity_added: qty,
-      quantity_in_stock: item.quantity_in_stock,
+      quantity: qty,
+      transaction_id: pendingReceipt.id,
     });
-    return success(res, item, 'Stock received');
+
+    return created(
+      res,
+      serializeReceipt(loaded),
+      'Receipt recorded — awaiting confirmation by another pharmacy supervisor'
+    );
   } catch (err) {
     await t.rollback();
-    return error(res, 'Failed to receive stock', 500);
+    return error(res, 'Failed to record stock receipt', 500);
+  }
+};
+
+exports.getPendingReceipts = async (req, res) => {
+  try {
+    const facilityId = req.user.facility_id;
+    const rows = await StockTransaction.findAll({
+      where: { type: 'received', status: 'pending' },
+      include: [
+        {
+          model: PharmacyInventory,
+          as: 'inventory',
+          where: { facility_id: facilityId },
+          required: true,
+        },
+        { association: 'performedBy', attributes: ['id', 'first_name', 'last_name'] },
+      ],
+      order: [['created_at', 'ASC']],
+    });
+    return success(res, rows.map(serializeReceipt));
+  } catch (err) {
+    return error(res, 'Failed to fetch pending receipts', 500);
+  }
+};
+
+exports.getConfirmedReceipts = async (req, res) => {
+  try {
+    const facilityId = req.user.facility_id;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 50);
+    const rows = await StockTransaction.findAll({
+      where: { type: 'received', status: 'confirmed' },
+      include: [
+        {
+          model: PharmacyInventory,
+          as: 'inventory',
+          where: { facility_id: facilityId },
+          required: true,
+        },
+        { association: 'performedBy', attributes: ['id', 'first_name', 'last_name'] },
+        { association: 'confirmedBy', attributes: ['id', 'first_name', 'last_name'] },
+      ],
+      order: [['confirmed_at', 'DESC']],
+      limit,
+    });
+    return success(res, rows.map(serializeReceipt));
+  } catch (err) {
+    return error(res, 'Failed to fetch confirmed receipts', 500);
+  }
+};
+
+exports.confirmReceipt = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const tx = await StockTransaction.findByPk(req.params.transactionId, {
+      include: [{ model: PharmacyInventory, as: 'inventory' }],
+      transaction: t,
+    });
+
+    if (!tx || tx.type !== 'received' || tx.status !== 'pending') {
+      await t.rollback();
+      return error(res, 'Pending receipt not found', 404);
+    }
+    if (!tx.inventory || tx.inventory.facility_id !== req.user.facility_id) {
+      await t.rollback();
+      return error(res, 'Pending receipt not found', 404);
+    }
+    if (tx.performed_by === req.user.id) {
+      await t.rollback();
+      return error(
+        res,
+        'You cannot confirm a receipt you recorded. Another pharmacy supervisor must confirm.',
+        403
+      );
+    }
+
+    await tx.inventory.update(
+      { quantity_in_stock: tx.inventory.quantity_in_stock + tx.quantity },
+      { transaction: t }
+    );
+
+    const confirmedAt = new Date();
+    await tx.update(
+      {
+        status: 'confirmed',
+        confirmed_by: req.user.id,
+        confirmed_at: confirmedAt,
+      },
+      { transaction: t }
+    );
+
+    await t.commit();
+
+    const loaded = await StockTransaction.findByPk(tx.id, { include: receiptInclude });
+    await tx.inventory.reload();
+    maybeEmitLowStock(tx.inventory);
+
+    notificationService.emitPharmacyInventoryUpdate({
+      type: 'stock_receipt_confirmed',
+      inventory_id: tx.inventory.id,
+      medication_name: tx.inventory.medication_name,
+      quantity: tx.quantity,
+      transaction_id: tx.id,
+    });
+
+    return success(res, serializeReceipt(loaded), 'Stock receipt confirmed');
+  } catch (err) {
+    await t.rollback();
+    console.error('Confirm receipt error:', err);
+    return error(res, 'Failed to confirm receipt', 500);
   }
 };
 
@@ -305,11 +455,14 @@ exports.getTransactions = async (req, res) => {
   try {
     const transactions = await StockTransaction.findAll({
       where: { inventory_id: req.params.id },
-      include: [{ association: 'performedBy', attributes: ['id', 'first_name', 'last_name'] }],
+      include: [
+        { association: 'performedBy', attributes: ['id', 'first_name', 'last_name'] },
+        { association: 'confirmedBy', attributes: ['id', 'first_name', 'last_name'] },
+      ],
       order: [['created_at', 'DESC']],
       limit: 50,
     });
-    return success(res, transactions);
+    return success(res, transactions.map(serializeReceipt));
   } catch (err) {
     return error(res, 'Failed to fetch transactions', 500);
   }

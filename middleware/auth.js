@@ -16,7 +16,12 @@ const authenticate = async (req, res, next) => {
     });
 
     if (!user || !user.is_active) {
-      return res.status(401).json({ success: false, message: 'User not found or inactive' });
+      return res.status(401).json({
+        success: false,
+        message: user && !user.is_active
+          ? 'Your account has been deactivated. Contact your system administrator.'
+          : 'User not found or inactive',
+      });
     }
 
     req.user = user;

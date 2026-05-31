@@ -16,7 +16,10 @@ router.post('/facilities', authorize('facility', 'create'), auditMiddleware('fac
 // User management
 router.get('/users', authorize('user', 'read'), adminController.getUsers);
 router.post('/users', authorize('user', 'create'), auditMiddleware('user'), adminController.createUser);
+router.post('/system-admins', allowRoles('system_admin'), auditMiddleware('user'), adminController.createSystemAdmin);
 router.put('/users/:id', authorize('user', 'update'), auditMiddleware('user'), adminController.updateUser);
+router.post('/users/:id/transfer', authorize('user', 'update'), auditMiddleware('user'), adminController.transferEmployee);
+router.get('/users/:id/facility-history', authorize('user', 'read'), adminController.getEmployeeFacilityHistory);
 
 // Roles
 router.get('/roles', authorize('user', 'read'), adminController.getRoles);

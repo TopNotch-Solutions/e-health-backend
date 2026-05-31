@@ -23,6 +23,7 @@ module.exports = (sequelize, DataTypes) => {
     social_history: { type: DataTypes.TEXT },
     physical_examination: { type: DataTypes.TEXT },
     notes: { type: DataTypes.TEXT },
+    visit_classification: { type: DataTypes.ENUM('follow_up', 'sick') },
   }, {
     tableName: 'vitals',
     timestamps: true,

@@ -1,20 +1,23 @@
 const { v4: uuidv4 } = require('uuid');
-const { Patient, Visit, QueueEntry, sequelize } = require('../models');
+const CLINIC_FRONT_OFFICE_ROLES = ['front_office', 'booking_room'];
+
+function isClinicFrontOffice(role) {
+  return CLINIC_FRONT_OFFICE_ROLES.includes(role);
+}
+const { Patient, Visit, sequelize } = require('../models');
 const { generatePatientNumber, generateVisitNumber, generateEmergencyId } = require('../utils/idGenerator');
 const { success, created, error, paginated } = require('../utils/response');
 const { getIO } = require('../socket');
 const queueService = require('../services/queueService');
 const { emitFrontOfficeRegistration } = require('../services/notificationService');
 const billingChargeService = require('../services/billingChargeService');
-
-function parseEmergencyFlag(value) {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
-
-function queuePriorityForPatient(patient, bodyFlag) {
-  if (parseEmergencyFlag(bodyFlag) || patient?.is_emergency) return 'emergency';
-  return 'normal';
-}
+const { assertCanEditPatientToday } = require('../services/frontOfficeService');
+const {
+  resolveFrontOfficeRouting,
+  buildIntakeNotes,
+  emitQueueEvents,
+  EMERGENCY_UNIT_DEPARTMENT,
+} = require('../utils/patientRouting');
 
 // Register new patient (Known or Returning)
 exports.register = async (req, res) => {
@@ -23,33 +26,49 @@ exports.register = async (req, res) => {
     const {
       first_name, last_name, sex, date_of_birth, id_number,
       phone, address, payment_type, emergency_contact_name,
-      emergency_contact_phone, category, is_emergency,
+      emergency_contact_phone, category, is_emergency, immediate_triage,
+      routing_destination, mode_of_arrival, accompanied_by,
     } = req.body;
 
     if (!first_name || !last_name || !sex) {
       return error(res, 'First name, last name, and sex are required', 400);
     }
 
-    const patientCategory = category || 'known';
-    const isEmergency = parseEmergencyFlag(is_emergency);
+    const routing = resolveFrontOfficeRouting({
+      is_emergency,
+      immediate_triage,
+      routing_destination,
+      mode_of_arrival,
+      accompanied_by,
+    });
+
+    const isEmergency = routing.isEmergency;
+    let patientCategory = category || 'known';
+    if (routing.immediateTriage) {
+      patientCategory = 'unknown';
+    }
+
+    const tempId = routing.immediateTriage ? generateEmergencyId() : null;
+
     const patient = await Patient.create({
       id: uuidv4(),
       patient_number: generatePatientNumber(),
       category: patientCategory,
       payment_type: payment_type || 'state',
       is_emergency: isEmergency,
-      first_name,
-      last_name,
+      first_name: routing.immediateTriage ? 'Unknown' : first_name,
+      last_name: routing.immediateTriage ? tempId : last_name,
       sex,
-      date_of_birth: date_of_birth || null,
-      id_number: id_number || null,
-      phone: phone || null,
-      address: address || null,
-      emergency_contact_name: emergency_contact_name || null,
-      emergency_contact_phone: emergency_contact_phone || null,
+      date_of_birth: routing.immediateTriage ? null : (date_of_birth || null),
+      id_number: routing.immediateTriage ? null : (id_number || null),
+      phone: routing.immediateTriage ? null : (phone || null),
+      address: routing.immediateTriage ? null : (address || null),
+      emergency_contact_name: routing.immediateTriage ? null : (emergency_contact_name || null),
+      emergency_contact_phone: routing.immediateTriage ? null : (emergency_contact_phone || null),
+      temp_id: tempId,
     }, { transaction: t });
 
-    const visitType = isEmergency
+    const visitType = routing.immediateTriage || isEmergency
       ? 'emergency'
       : patientCategory === 'returning'
         ? 'follow_up'
@@ -62,31 +81,37 @@ exports.register = async (req, res) => {
       visit_number: generateVisitNumber(),
       visit_type: visitType,
       status: 'in_progress',
-      current_department: 'nurse',
+      current_department: routing.department,
       created_by: req.user.id,
     }, { transaction: t });
 
-    const priority = queuePriorityForPatient(patient, isEmergency);
-
     const queueEntry = await queueService.pushToQueue({
       visit_id: visit.id,
-      department: 'nurse',
-      priority,
+      department: routing.department,
+      priority: routing.priority,
       pushed_by: req.user.id,
-      notes: isEmergency ? 'Emergency registration' : null,
+      notes: buildIntakeNotes(req.body, routing) || (routing.immediateTriage ? 'Immediate triage emergency registration' : 'New patient registration'),
     }, t);
 
     await billingChargeService.chargeAdmissionFee(visit.id, req.user.facility_id, t);
 
     await t.commit();
 
-    // Emit WebSocket event to nurse room
     const io = getIO();
-    io.to('room:nurse').emit('queue:new_patient', {
-      queueEntry,
-      patient: { id: patient.id, first_name, last_name, patient_number: patient.patient_number },
-      visit: { id: visit.id, visit_number: visit.visit_number, visit_type: visit.visit_type },
-    });
+    const patientPayload = {
+      id: patient.id,
+      first_name: patient.first_name,
+      last_name: patient.last_name,
+      patient_number: patient.patient_number,
+      is_emergency: isEmergency,
+      temp_id: patient.temp_id,
+    };
+    const visitPayload = {
+      id: visit.id,
+      visit_number: visit.visit_number,
+      visit_type: visit.visit_type,
+    };
+    emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
 
     emitFrontOfficeRegistration({
       visitId: visit.id,
@@ -95,20 +120,20 @@ exports.register = async (req, res) => {
       processedBy: req.user.id,
     });
 
-    return created(res, { patient, visit, queueEntry }, 'Patient registered and queued to nurse');
+    return created(res, { patient, visit, queueEntry }, `Patient registered and routed to ${routing.routingLabel || routing.department}`);
   } catch (err) {
     await t.rollback();
     console.error('Register patient error:', err);
-    const status = err.message?.includes('already in the') ? 409 : 500;
+    const status = err.statusCode || (err.message?.includes('already in the') ? 409 : 500);
     return error(res, err.message || 'Failed to register patient', status);
   }
 };
 
-// Emergency one-click registration (Unknown patient)
+// Emergency one-click registration (Unknown patient — immediate triage)
 exports.emergencyRegister = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const { sex, notes, equipment_required } = req.body;
+    const { sex, notes } = req.body;
 
     const tempId = generateEmergencyId();
     const patient = await Patient.create({
@@ -123,7 +148,6 @@ exports.emergencyRegister = async (req, res) => {
       sex: sex || 'other',
     }, { transaction: t });
 
-    // Create emergency visit
     const visit = await Visit.create({
       id: uuidv4(),
       patient_id: patient.id,
@@ -131,32 +155,38 @@ exports.emergencyRegister = async (req, res) => {
       visit_number: generateVisitNumber(),
       visit_type: 'emergency',
       status: 'in_progress',
-      current_department: 'nurse',
+      current_department: EMERGENCY_UNIT_DEPARTMENT,
       created_by: req.user.id,
     }, { transaction: t });
 
-    // Emergency unknown — nurse queue first (priority at top of nurse and later doctor queues)
     const queueEntry = await queueService.pushToQueue({
       visit_id: visit.id,
-      department: 'nurse',
+      department: EMERGENCY_UNIT_DEPARTMENT,
       priority: 'emergency',
       pushed_by: req.user.id,
-      notes: notes || 'Emergency admission - unknown patient',
+      notes: notes || 'Immediate triage — unknown emergency patient',
     }, t);
 
     await t.commit();
 
     const io = getIO();
-    io.to('room:nurse').emit('queue:new_patient', {
-      queueEntry,
-      patient: { id: patient.id, temp_id: tempId, patient_number: patient.patient_number, is_emergency: true },
-      visit: { id: visit.id, visit_number: visit.visit_number, visit_type: 'emergency' },
-    });
-    io.to('room:doctor').emit('emergency:override', {
-      queueEntry,
-      patient: { id: patient.id, temp_id: tempId, patient_number: patient.patient_number },
-      visit: { id: visit.id, visit_number: visit.visit_number },
-    });
+    const routing = {
+      department: EMERGENCY_UNIT_DEPARTMENT,
+      immediateTriage: true,
+      isEmergency: true,
+    };
+    const patientPayload = {
+      id: patient.id,
+      temp_id: tempId,
+      patient_number: patient.patient_number,
+      is_emergency: true,
+    };
+    const visitPayload = {
+      id: visit.id,
+      visit_number: visit.visit_number,
+      visit_type: 'emergency',
+    };
+    emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
 
     emitFrontOfficeRegistration({
       visitId: visit.id,
@@ -165,7 +195,7 @@ exports.emergencyRegister = async (req, res) => {
       processedBy: req.user.id,
     });
 
-    return created(res, { patient, visit, queueEntry }, 'Emergency patient registered - prioritized in nurse queue');
+    return created(res, { patient, visit, queueEntry }, 'Emergency patient routed to Emergency Unit');
   } catch (err) {
     await t.rollback();
     console.error('Emergency register error:', err);
@@ -326,6 +356,14 @@ exports.update = async (req, res) => {
     const patient = await Patient.findByPk(req.params.id);
     if (!patient) return error(res, 'Patient not found', 404);
 
+    if (isClinicFrontOffice(req.user.role)) {
+      try {
+        await assertCanEditPatientToday(patient.id, req.user.id, req.user.facility_id);
+      } catch (err) {
+        return error(res, err.message, err.statusCode || 403);
+      }
+    }
+
     const allowedFields = [
       'first_name', 'last_name', 'sex', 'date_of_birth', 'id_number',
       'phone', 'address', 'payment_type', 'emergency_contact_name',
@@ -335,6 +373,19 @@ exports.update = async (req, res) => {
     const updates = {};
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) updates[field] = req.body[field];
+    }
+
+    if (updates.category === 'unknown' && patient.category !== 'unknown') {
+      return error(res, 'Cannot change patient category to unknown via profile update', 400);
+    }
+
+    if (
+      patient.category === 'unknown'
+      && updates.category === 'known'
+      && updates.first_name
+      && updates.last_name
+    ) {
+      updates.temp_id = null;
     }
 
     await patient.update(updates);
@@ -351,15 +402,27 @@ exports.createVisit = async (req, res) => {
     const patient = await Patient.findByPk(req.params.id);
     if (!patient) return error(res, 'Patient not found', 404);
 
-    const { mode_of_arrival, accompanied_by, is_emergency } = req.body || {};
-    const markEmergency = parseEmergencyFlag(is_emergency);
+    const {
+      mode_of_arrival,
+      accompanied_by,
+      is_emergency,
+      immediate_triage,
+      routing_destination,
+    } = req.body || {};
+
+    const routing = resolveFrontOfficeRouting({
+      is_emergency,
+      immediate_triage,
+      routing_destination,
+      mode_of_arrival,
+      accompanied_by,
+    });
 
     const patientUpdates = { category: 'returning' };
-    if (markEmergency) patientUpdates.is_emergency = true;
+    if (routing.isEmergency) patientUpdates.is_emergency = true;
     await patient.update(patientUpdates, { transaction: t });
 
-    const isEmergency = markEmergency || Boolean(patient.is_emergency);
-    const visitType = isEmergency ? 'emergency' : 'follow_up';
+    const visitType = routing.immediateTriage || routing.isEmergency ? 'emergency' : 'follow_up';
 
     const visit = await Visit.create({
       id: uuidv4(),
@@ -368,26 +431,16 @@ exports.createVisit = async (req, res) => {
       visit_number: generateVisitNumber(),
       visit_type: visitType,
       status: 'in_progress',
-      current_department: 'nurse',
+      current_department: routing.department,
       created_by: req.user.id,
     }, { transaction: t });
 
-    const intakeNotes = [
-      mode_of_arrival && `Mode of arrival: ${mode_of_arrival}`,
-      accompanied_by && `Accompanied by: ${accompanied_by}`,
-      isEmergency && 'Emergency check-in',
-    ]
-      .filter(Boolean)
-      .join('; ');
-
-    const priority = queuePriorityForPatient(patient, isEmergency);
-
     const queueEntry = await queueService.pushToQueue({
       visit_id: visit.id,
-      department: 'nurse',
-      priority,
+      department: routing.department,
+      priority: routing.priority,
       pushed_by: req.user.id,
-      notes: intakeNotes || null,
+      notes: buildIntakeNotes(req.body, routing),
     }, t);
 
     await billingChargeService.chargeAdmissionFee(visit.id, req.user.facility_id, t);
@@ -395,11 +448,19 @@ exports.createVisit = async (req, res) => {
     await t.commit();
 
     const io = getIO();
-    io.to('room:nurse').emit('queue:new_patient', {
-      queueEntry,
-      patient: { id: patient.id, first_name: patient.first_name, last_name: patient.last_name, patient_number: patient.patient_number },
-      visit: { id: visit.id, visit_number: visit.visit_number, visit_type: visitType },
-    });
+    const patientPayload = {
+      id: patient.id,
+      first_name: patient.first_name,
+      last_name: patient.last_name,
+      patient_number: patient.patient_number,
+      is_emergency: routing.isEmergency,
+    };
+    const visitPayload = {
+      id: visit.id,
+      visit_number: visit.visit_number,
+      visit_type: visitType,
+    };
+    emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
 
     emitFrontOfficeRegistration({
       visitId: visit.id,
@@ -408,10 +469,14 @@ exports.createVisit = async (req, res) => {
       processedBy: req.user.id,
     });
 
-    return created(res, { visit, queueEntry }, 'Visit created - patient queued to nurse');
+    return created(
+      res,
+      { visit, queueEntry },
+      `Visit created — patient routed to ${routing.routingLabel || routing.department}`
+    );
   } catch (err) {
     await t.rollback();
-    const status = err.message?.includes('already in the') ? 409 : 500;
+    const status = err.statusCode || (err.message?.includes('already in the') ? 409 : 500);
     return error(res, err.message || 'Failed to create visit', status);
   }
 };

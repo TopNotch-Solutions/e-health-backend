@@ -259,6 +259,28 @@ async function skipEntry(entryId, notes) {
 }
 
 /**
+ * Release an in-progress entry back to waiting (same nurse can pick up again later).
+ */
+async function releaseEntry(entryId, userId) {
+  const entry = await QueueEntry.findByPk(entryId);
+  if (!entry) throw new Error('Queue entry not found');
+  if (entry.status !== 'in_progress') {
+    throw new Error('Patient is not in an active session');
+  }
+  if (entry.assigned_to !== userId) {
+    throw new Error('You can only release patients assigned to you');
+  }
+
+  await entry.update({
+    status: 'waiting',
+    assigned_to: null,
+    started_at: null,
+  });
+
+  return entry;
+}
+
+/**
  * Get queue stats for a department.
  */
 async function getQueueStats(department, facilityId) {
@@ -283,5 +305,6 @@ module.exports = {
   startEntry,
   completeEntry,
   skipEntry,
+  releaseEntry,
   getQueueStats,
 };

@@ -19,6 +19,32 @@ router.post('/', authorize('vitals', 'create'), auditMiddleware('vitals'), nurse
 // Record vitals and push to doctor queue
 router.post('/push-to-doctor', authorize('vitals', 'create'), auditMiddleware('vitals'), nurseController.createAndPush);
 
+router.post(
+  '/parameter-nurse/push',
+  authorize('vitals', 'create'),
+  auditMiddleware('vitals'),
+  nurseController.parameterNursePush
+);
+
+router.post(
+  '/screening-nurse/push',
+  authorize('vitals', 'create'),
+  auditMiddleware('vitals'),
+  nurseController.screeningNursePush
+);
+
+router.get(
+  '/handover/:visitId',
+  authorize('vitals', 'read'),
+  nurseController.getHandoverVitals
+);
+
+router.get(
+  '/clinical-timeline/:visitId',
+  authorize('vitals', 'read'),
+  nurseController.getClinicalTimeline
+);
+
 // Get vitals by visit
 router.get('/visit/:visitId', authorize('vitals', 'read'), nurseController.getByVisit);
 

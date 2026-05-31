@@ -37,6 +37,14 @@ function initSocket(server) {
     // Auto-join department room based on role
     const departmentRoom = `room:${socket.userRole}`;
     socket.join(departmentRoom);
+    // Clinic master doctor uses a dedicated consultation queue (not emergency unit)
+    if (socket.userRole === 'master_doctor') {
+      socket.join('room:master_doctor');
+    }
+    // Clinic/hospital pharmacy staff share the facility pharmacy queue
+    if (socket.userRole === 'pharmacist' || socket.userRole === 'pharmacy_supervisor') {
+      socket.join('room:pharmacy');
+    }
     socket.join(`user:${socket.userId}`);
     socket.join(`facility:${socket.facilityId}`);
 

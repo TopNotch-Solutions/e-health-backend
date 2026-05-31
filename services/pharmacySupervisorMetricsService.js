@@ -114,19 +114,21 @@ async function getSupervisorMetrics(facilityId) {
       INNER JOIN pharmacy_inventory pi ON pi.id = st.inventory_id
       WHERE pi.facility_id = :facilityId
         AND st.type = 'received'
-        AND st.created_at >= :today AND st.created_at < :tomorrow
+        AND st.status = 'confirmed'
+        AND st.confirmed_at >= :today AND st.confirmed_at < :tomorrow
       `,
       { replacements: { facilityId, today, tomorrow }, type: sequelize.QueryTypes.SELECT }
     ),
     sequelize.query(
       `
-      SELECT HOUR(st.created_at) AS hour, SUM(st.quantity) AS count
+      SELECT HOUR(st.confirmed_at) AS hour, SUM(st.quantity) AS count
       FROM stock_transactions st
       INNER JOIN pharmacy_inventory pi ON pi.id = st.inventory_id
       WHERE pi.facility_id = :facilityId
         AND st.type = 'received'
-        AND st.created_at >= :today AND st.created_at < :tomorrow
-      GROUP BY HOUR(st.created_at)
+        AND st.status = 'confirmed'
+        AND st.confirmed_at >= :today AND st.confirmed_at < :tomorrow
+      GROUP BY HOUR(st.confirmed_at)
       `,
       { replacements: { facilityId, today, tomorrow }, type: sequelize.QueryTypes.SELECT }
     ),

@@ -12,6 +12,7 @@ module.exports = (sequelize, DataTypes) => {
     phone: { type: DataTypes.STRING(20) },
     is_active: { type: DataTypes.BOOLEAN, defaultValue: true },
     last_login: { type: DataTypes.DATE },
+    created_by: { type: DataTypes.CHAR(36), allowNull: true },
   }, {
     tableName: 'users',
     timestamps: true,
@@ -22,6 +23,11 @@ module.exports = (sequelize, DataTypes) => {
   User.associate = (models) => {
     User.belongsTo(models.Role, { foreignKey: 'role_id', as: 'role' });
     User.belongsTo(models.Facility, { foreignKey: 'facility_id', as: 'facility' });
+    User.belongsTo(models.User, { foreignKey: 'created_by', as: 'createdBy' });
+    User.hasMany(models.EmployeeFacilityAssignment, {
+      foreignKey: 'user_id',
+      as: 'facilityAssignments',
+    });
   };
 
   return User;
