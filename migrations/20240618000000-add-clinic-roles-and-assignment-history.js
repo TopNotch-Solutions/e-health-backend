@@ -3,7 +3,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { AUTHORIZED_CLINIC_ROLES } = require('../config/clinicRoles');
 const { ROLE_PERMISSIONS } = require('../config/roles');
-const { tableExists } = require('./helpers');
+const { tableExists } = require('./utils/columnHelpers');
 const NEW_CLINIC_ROLE_SLUGS = [
   'parameter_nurse',
   'screening_nurse',

@@ -1,6 +1,6 @@
 'use strict';
 
-const { tableExists } = require('./helpers');
+const { tableExists } = require('./utils/columnHelpers');
 
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {

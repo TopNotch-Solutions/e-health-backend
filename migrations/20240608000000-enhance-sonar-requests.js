@@ -1,6 +1,6 @@
 'use strict';
 
-const { addColumnIfMissing, enumColumnIncludes, removeColumnIfExists } = require('./helpers');
+const { addColumnIfMissing, enumColumnIncludes, removeColumnIfExists } = require('./utils/columnHelpers');
 
 /** Clinical referral fields, prep, emergency priority, and sonar queue link. */
 module.exports = {

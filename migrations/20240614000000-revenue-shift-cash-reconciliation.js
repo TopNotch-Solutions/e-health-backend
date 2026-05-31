@@ -1,6 +1,6 @@
 'use strict';
 
-const { addColumnIfMissing, removeColumnIfExists } = require('./helpers');
+const { addColumnIfMissing, removeColumnIfExists } = require('./utils/columnHelpers');
 
 module.exports = {
   async up(queryInterface, Sequelize) {

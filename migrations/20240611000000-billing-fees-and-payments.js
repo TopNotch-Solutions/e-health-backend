@@ -1,6 +1,6 @@
 'use strict';
 
-const { addColumnIfMissing, enumColumnIncludes, removeColumnIfExists, tableExists } = require('./helpers');
+const { addColumnIfMissing, enumColumnIncludes, removeColumnIfExists, tableExists } = require('./utils/columnHelpers');
 
 const DEFAULT_FEES = [
   { fee_key: 'nurse_queue', amount: 35.0 },
