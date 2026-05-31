@@ -3,7 +3,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { AUTHORIZED_CLINIC_ROLES } = require('../config/clinicRoles');
 const { ROLE_PERMISSIONS } = require('../config/roles');
-
+const { tableExists } = require('./helpers');
 const NEW_CLINIC_ROLE_SLUGS = [
   'parameter_nurse',
   'screening_nurse',
@@ -57,8 +57,9 @@ module.exports = {
       }
     }
 
-    await queryInterface.createTable('employee_facility_assignments', {
-      id: {
+    if (!(await tableExists(queryInterface, 'employee_facility_assignments'))) {
+      await queryInterface.createTable('employee_facility_assignments', {
+        id: {
         type: Sequelize.CHAR(36),
         primaryKey: true,
       },
@@ -108,8 +109,14 @@ module.exports = {
       },
     });
 
-    await queryInterface.addIndex('employee_facility_assignments', ['user_id']);
-    await queryInterface.addIndex('employee_facility_assignments', ['facility_id']);
+      await queryInterface.addIndex('employee_facility_assignments', ['user_id']);
+      await queryInterface.addIndex('employee_facility_assignments', ['facility_id']);
+    }
+
+    const [existingAssignments] = await queryInterface.sequelize.query(
+      'SELECT 1 AS ok FROM employee_facility_assignments LIMIT 1'
+    );
+    if (existingAssignments.length > 0) return;
 
     // Backfill open assignments for existing employees.
     const [users] = await queryInterface.sequelize.query(

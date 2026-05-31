@@ -1,31 +1,33 @@
 'use strict';
 
+const { addColumnIfMissing, removeColumnIfExists } = require('./helpers');
+
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.addColumn('revenue_shifts', 'facility_id', {
+    await addColumnIfMissing(queryInterface, 'revenue_shifts', 'facility_id', {
       type: Sequelize.CHAR(36),
       allowNull: true,
       references: { model: 'facilities', key: 'id' },
     });
 
-    await queryInterface.addColumn('revenue_shifts', 'expected_cash', {
+    await addColumnIfMissing(queryInterface, 'revenue_shifts', 'expected_cash', {
       type: Sequelize.DECIMAL(12, 2),
       allowNull: false,
       defaultValue: 0,
     });
 
-    await queryInterface.addColumn('revenue_shifts', 'expected_eft', {
+    await addColumnIfMissing(queryInterface, 'revenue_shifts', 'expected_eft', {
       type: Sequelize.DECIMAL(12, 2),
       allowNull: false,
       defaultValue: 0,
     });
 
-    await queryInterface.addColumn('revenue_shifts', 'verified_cash', {
+    await addColumnIfMissing(queryInterface, 'revenue_shifts', 'verified_cash', {
       type: Sequelize.DECIMAL(12, 2),
       allowNull: true,
     });
 
-    await queryInterface.addColumn('revenue_shifts', 'cash_deficit', {
+    await addColumnIfMissing(queryInterface, 'revenue_shifts', 'cash_deficit', {
       type: Sequelize.DECIMAL(12, 2),
       allowNull: true,
     });
@@ -39,10 +41,10 @@ module.exports = {
   },
 
   async down(queryInterface) {
-    await queryInterface.removeColumn('revenue_shifts', 'cash_deficit');
-    await queryInterface.removeColumn('revenue_shifts', 'verified_cash');
-    await queryInterface.removeColumn('revenue_shifts', 'expected_eft');
-    await queryInterface.removeColumn('revenue_shifts', 'expected_cash');
-    await queryInterface.removeColumn('revenue_shifts', 'facility_id');
+    await removeColumnIfExists(queryInterface, 'revenue_shifts', 'cash_deficit');
+    await removeColumnIfExists(queryInterface, 'revenue_shifts', 'verified_cash');
+    await removeColumnIfExists(queryInterface, 'revenue_shifts', 'expected_eft');
+    await removeColumnIfExists(queryInterface, 'revenue_shifts', 'expected_cash');
+    await removeColumnIfExists(queryInterface, 'revenue_shifts', 'facility_id');
   },
 };

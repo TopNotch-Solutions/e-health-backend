@@ -1,8 +1,12 @@
 'use strict';
 
+const { tableExists } = require('./helpers');
+
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, Sequelize) {
+    if (await tableExists(queryInterface, 'screening_assessments')) return;
+
     await queryInterface.createTable('screening_assessments', {
       id: {
         type: Sequelize.CHAR(36),

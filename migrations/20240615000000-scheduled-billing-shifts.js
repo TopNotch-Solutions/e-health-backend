@@ -1,8 +1,10 @@
 'use strict';
 
+const { addColumnIfMissing, removeColumnIfExists } = require('./helpers');
+
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.addColumn('revenue_shifts', 'shift_slot', {
+    await addColumnIfMissing(queryInterface, 'revenue_shifts', 'shift_slot', {
       type: Sequelize.ENUM('day', 'night'),
       allowNull: true,
     });
@@ -15,7 +17,7 @@ module.exports = {
   },
 
   async down(queryInterface, Sequelize) {
-    await queryInterface.removeColumn('revenue_shifts', 'shift_slot');
+    await removeColumnIfExists(queryInterface, 'revenue_shifts', 'shift_slot');
     await queryInterface.changeColumn('revenue_shifts', 'billing_clerk_id', {
       type: Sequelize.CHAR(36),
       allowNull: false,
