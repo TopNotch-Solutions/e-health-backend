@@ -4,6 +4,14 @@
 module.exports = {
   async up(queryInterface) {
     await queryInterface.sequelize.query(`
+      DELETE nq FROM facility_billing_fees nq
+      INNER JOIN facility_billing_fees af
+        ON af.facility_id = nq.facility_id
+       AND af.fee_key = 'admission_fee'
+      WHERE nq.fee_key = 'nurse_queue'
+    `);
+
+    await queryInterface.sequelize.query(`
       UPDATE facility_billing_fees
       SET fee_key = 'admission_fee'
       WHERE fee_key = 'nurse_queue'

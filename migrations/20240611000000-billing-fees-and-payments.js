@@ -83,18 +83,22 @@ module.exports = {
     }
 
     const [facilities] = await queryInterface.sequelize.query('SELECT id FROM facilities');
+    const now = new Date();
     for (const f of facilities) {
       for (const fee of DEFAULT_FEES) {
+        const feeKeysToCheck =
+          fee.fee_key === 'nurse_queue' ? ['nurse_queue', 'admission_fee'] : [fee.fee_key];
         const [existing] = await queryInterface.sequelize.query(
           `SELECT 1 AS ok FROM facility_billing_fees
-           WHERE facility_id = :facilityId AND fee_key = :feeKey LIMIT 1`,
-          { replacements: { facilityId: f.id, feeKey: fee.fee_key } }
+           WHERE facility_id = :facilityId AND fee_key IN (:feeKeys) LIMIT 1`,
+          { replacements: { facilityId: f.id, feeKeys: feeKeysToCheck } }
         );
         if (existing.length === 0) {
           await queryInterface.bulkInsert('facility_billing_fees', [{
             facility_id: f.id,
             fee_key: fee.fee_key,
             amount: fee.amount,
+            updated_at: now,
           }]);
         }
       }
