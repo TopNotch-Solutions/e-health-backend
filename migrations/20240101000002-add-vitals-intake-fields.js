@@ -3,37 +3,48 @@
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.addColumn('vitals', 'onset_at', {
-      type: Sequelize.DATE,
-      allowNull: true,
-    });
-    await queryInterface.addColumn('vitals', 'aggravating_factors', {
-      type: Sequelize.TEXT,
-      allowNull: true,
-    });
-    await queryInterface.addColumn('vitals', 'alleviating_factors', {
-      type: Sequelize.TEXT,
-      allowNull: true,
-    });
-    await queryInterface.addColumn('vitals', 'current_medications', {
-      type: Sequelize.TEXT,
-      allowNull: true,
-    });
-    await queryInterface.addColumn('vitals', 'immunization_status', {
-      type: Sequelize.STRING(100),
-      allowNull: true,
-    });
-    await queryInterface.addColumn('vitals', 'social_history', {
-      type: Sequelize.TEXT,
-      allowNull: true,
-    });
-    await queryInterface.addColumn('vitals', 'physical_examination', {
-      type: Sequelize.TEXT,
-      allowNull: true,
-    });
+    const table = await queryInterface.describeTable('vitals');
+
+    const columns = {
+      onset_at: {
+        type: Sequelize.DATE,
+        allowNull: true,
+      },
+      aggravating_factors: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+      },
+      alleviating_factors: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+      },
+      current_medications: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+      },
+      immunization_status: {
+        type: Sequelize.STRING(100),
+        allowNull: true,
+      },
+      social_history: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+      },
+      physical_examination: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+      },
+    };
+
+    for (const [name, definition] of Object.entries(columns)) {
+      if (!table[name]) {
+        await queryInterface.addColumn('vitals', name, definition);
+      }
+    }
   },
 
   async down(queryInterface) {
+    const table = await queryInterface.describeTable('vitals');
     const cols = [
       'onset_at',
       'aggravating_factors',
@@ -44,7 +55,9 @@ module.exports = {
       'physical_examination',
     ];
     for (const col of cols) {
-      await queryInterface.removeColumn('vitals', col);
+      if (table[col]) {
+        await queryInterface.removeColumn('vitals', col);
+      }
     }
   },
 };
