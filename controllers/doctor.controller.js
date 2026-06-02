@@ -1265,6 +1265,100 @@ exports.clinicScheduleFollowUp = async (req, res) => {
   }
 };
 
+// Clinic doctor: transfer patient to emergency unit queue
+exports.clinicTransferEmergencyUnit = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { visit_id, queue_entry_id, diagnosis, notes } = req.body;
+
+    if (!visit_id || !queue_entry_id) {
+      await t.rollback();
+      return error(res, 'visit_id and queue_entry_id are required', 400);
+    }
+
+    const diagnosisError = validateDiagnosis(diagnosis);
+    if (diagnosisError) {
+      await t.rollback();
+      return error(res, diagnosisError, 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, { transaction: t });
+    if (!visit) {
+      await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const consultation = await upsertClinicConsultation({
+      visit_id,
+      doctor_id: req.user.id,
+      diagnosis,
+      notes,
+      actions_taken: JSON.stringify({ clinic_disposition: 'emergency_unit' }),
+      transaction: t,
+    });
+
+    const doctorEntry = await resolveClinicDoctorQueueEntry({ visit_id, queue_entry_id, transaction: t });
+    let queueResult = { completedEntry: null, nextEntry: null };
+
+    if (doctorEntry) {
+      queueResult = await queueService.completeEntry(
+        doctorEntry.id,
+        {
+          nextDepartment: 'emergency_unit',
+          nextPriority: 'emergency',
+          pushed_by: req.user.id,
+          notes: notes || 'Transferred from clinic doctor to Emergency Unit',
+        },
+        t
+      );
+    } else {
+      queueResult.nextEntry = await queueService.pushToQueue(
+        {
+          visit_id,
+          department: 'emergency_unit',
+          priority: 'emergency',
+          pushed_by: req.user.id,
+          notes: notes || 'Transferred from clinic doctor to Emergency Unit',
+        },
+        t
+      );
+    }
+
+    await t.commit();
+
+    try {
+      const io = getIO();
+      emitClinicDoctorQueueEvents({
+        io,
+        queueResult,
+        nextDepartment: 'emergency_unit',
+        pharmacyEntry: null,
+        prescription: null,
+      });
+      await queueService.getQueue('emergency_unit', req.user.facility_id).then((entries) => {
+        io.to('room:emergency_unit').emit('queue:refresh', { department: 'emergency_unit', entries });
+      });
+      emitDoctorActivity({
+        visitId: visit_id,
+        consultationId: consultation.id,
+        doctorId: req.user.id,
+        action: 'clinic_emergency_unit',
+      });
+    } catch (emitErr) {
+      console.error('Clinic emergency unit socket error:', emitErr.message);
+    }
+
+    return created(res, {
+      consultation,
+      queueEntry: queueResult.nextEntry,
+    }, 'Patient transferred to Emergency Unit');
+  } catch (err) {
+    await t.rollback();
+    console.error('Clinic emergency unit error:', err);
+    return error(res, err.message || 'Failed to transfer to emergency unit', 500);
+  }
+};
+
 // Clinic doctor: transfer patient to booking room queue
 exports.clinicTransferBookingRoom = async (req, res) => {
   const t = await sequelize.transaction();

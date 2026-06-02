@@ -4,6 +4,7 @@ const CLINIC_DISPOSITIONS = [
   { value: 'pharmacy', label: 'Pharmacy' },
   { value: 'follow_up', label: 'Follow-up appointment' },
   { value: 'booking_room', label: 'Booking Room' },
+  { value: 'emergency_unit', label: 'Emergency Unit' },
 ];
 
 const DISPOSITION_VALUE_SET = new Set(CLINIC_DISPOSITIONS.map((d) => d.value));

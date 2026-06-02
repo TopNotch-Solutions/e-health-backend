@@ -50,5 +50,11 @@ router.post(
   auditMiddleware('consultation'),
   doctorController.clinicTransferBookingRoom
 );
+router.post(
+  '/clinic/emergency-unit',
+  authorize('consultation', 'create'),
+  auditMiddleware('consultation'),
+  doctorController.clinicTransferEmergencyUnit
+);
 
 module.exports = router;

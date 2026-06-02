@@ -36,6 +36,8 @@ const DEPARTMENT_LABELS = {
   social_worker: 'Social Worker',
   screening_nurse: 'Screening Nurse',
   hiv_tester: 'HIV Testing Room',
+  art_nurse: 'ART — Antiretroviral Therapy',
+  emergency_unit_doctor: 'Emergency Unit Doctor',
   family_planning: 'Family Planning',
   booking_room: 'Booking Room',
 };
@@ -52,6 +54,8 @@ const ALL_QUEUE_DEPARTMENTS = [
   EMERGENCY_UNIT_DEPARTMENT,
   'screening_nurse',
   'hiv_tester',
+  'art_nurse',
+  'emergency_unit_doctor',
   'booking_room',
   ...FRONT_OFFICE_ROUTING.map((r) => r.value),
 ];

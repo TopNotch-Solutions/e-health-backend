@@ -334,6 +334,9 @@ exports.getHistory = async (req, res) => {
       where: { patient_id: req.params.id },
       include: [
         { association: 'vitals' },
+        { association: 'screeningAssessment' },
+        { association: 'hivTestResult' },
+        { association: 'artEpisode' },
         { association: 'consultations' },
         { association: 'prescriptions' },
         { association: 'labRequests' },

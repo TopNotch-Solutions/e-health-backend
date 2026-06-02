@@ -286,12 +286,26 @@ const CLINIC_FRONT_OFFICE_PERMISSIONS = ROLE_PERMISSIONS[ROLES.FRONT_OFFICE];
   ROLE_PERMISSIONS[role] = CLINIC_NURSE_PERMISSIONS;
 });
 
+// Emergency unit nurse prescribes immediate meds — needs catalog + stock lookup
+ROLE_PERMISSIONS[ROLES.EMERGENCY_UNIT_NURSE] = {
+  ...CLINIC_NURSE_PERMISSIONS,
+  inventory: ['read'],
+  prescription: ['create', 'read'],
+};
+
 ROLE_PERMISSIONS[ROLES.EMERGENCY_UNIT_DOCTOR] = CLINIC_DOCTOR_PERMISSIONS;
 ROLE_PERMISSIONS[ROLES.MASTER_DOCTOR] = CLINIC_DOCTOR_PERMISSIONS;
 ROLE_PERMISSIONS[ROLES.FAMILY_PLANNER] = {
   patient: ['read', 'update'],
   queue: ['read', 'push'],
 };
-ROLE_PERMISSIONS[ROLES.BOOKING_ROOM] = CLINIC_FRONT_OFFICE_PERMISSIONS;
+ROLE_PERMISSIONS[ROLES.BOOKING_ROOM] = {
+  ...CLINIC_FRONT_OFFICE_PERMISSIONS,
+  patient: ['create', 'read', 'update'],
+  consultation: ['read'],
+  referral: ['create', 'read'],
+  mortuary: ['create', 'read'],
+  queue: ['read', 'update'],
+};
 
 module.exports = { ROLES, PERMISSIONS, ROLE_PERMISSIONS };
