@@ -41,6 +41,18 @@ function initSocket(server) {
     if (socket.userRole === 'master_doctor') {
       socket.join('room:master_doctor');
     }
+    if (socket.userRole === 'dermatologist') {
+      socket.join('room:dermatologist');
+    }
+    if (socket.userRole === 'pap_smear_suite') {
+      socket.join('room:pap_smear');
+    }
+    if (socket.userRole === 'family_planner') {
+      socket.join('room:family_planning');
+    }
+    if (socket.userRole === 'pediatric_corner') {
+      socket.join('room:pediatric');
+    }
     // Clinic/hospital pharmacy staff share the facility pharmacy queue
     if (socket.userRole === 'pharmacist' || socket.userRole === 'pharmacy_supervisor') {
       socket.join('room:pharmacy');

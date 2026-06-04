@@ -7,6 +7,7 @@ const {
   ScreeningAssessment,
   HivTestResult,
   ArtEpisode,
+  PrepEpisode,
   sequelize,
 } = require('../models');
 const { success, created, error } = require('../utils/response');
@@ -18,6 +19,7 @@ const {
   ART_NURSE_DEPARTMENT,
   emptyPathwayData,
 } = require('../config/artPathway');
+const { PREP_DEPARTMENT, emptySessionData } = require('../config/prepSuite');
 
 async function emitQueueRefresh(io, department, facilityId) {
   const entries = await queueService.getQueue(department, facilityId);
@@ -61,6 +63,7 @@ exports.submitTestResult = async (req, res) => {
       test_method,
       kit_batch,
       notes,
+      route_to_prep,
     } = req.body;
 
     if (!visit_id || !queue_entry_id) {
@@ -70,6 +73,12 @@ exports.submitTestResult = async (req, res) => {
     if (!result || !['negative', 'positive'].includes(result)) {
       await t.rollback();
       return error(res, 'result must be negative or positive', 400);
+    }
+
+    const sendToPrep = result === 'negative' && route_to_prep === true;
+    if (result === 'negative' && route_to_prep !== true && route_to_prep !== false) {
+      await t.rollback();
+      return error(res, 'route_to_prep is required for negative results (true or false)', 400);
     }
 
     const visit = await Visit.findByPk(visit_id, {
@@ -120,6 +129,7 @@ exports.submitTestResult = async (req, res) => {
     }, { transaction: t });
 
     let artEpisode = null;
+    let prepEpisode = null;
     let nextDepartment = null;
 
     if (result === 'positive') {
@@ -135,6 +145,19 @@ exports.submitTestResult = async (req, res) => {
         enrolled_at: new Date(),
         status: 'active',
         pathway_data: emptyPathwayData(),
+      }, { transaction: t });
+    } else if (sendToPrep) {
+      nextDepartment = PREP_DEPARTMENT;
+      prepEpisode = await PrepEpisode.create({
+        id: uuidv4(),
+        patient_id: visit.patient_id,
+        visit_id,
+        hiv_test_result_id: testRecord.id,
+        enrolled_by: req.user.id,
+        status: 'active',
+        injection_administered: false,
+        session_data: emptySessionData(),
+        enrolled_at: new Date(),
       }, { transaction: t });
     } else {
       await visit.update({
@@ -153,7 +176,9 @@ exports.submitTestResult = async (req, res) => {
           : 'normal',
       notes: result === 'positive'
         ? 'HIV positive — escalated to ART'
-        : 'HIV negative — testing session complete',
+        : sendToPrep
+          ? 'HIV negative — routed to PrEP Suite'
+          : 'HIV negative — testing session complete',
       pushed_by: req.user.id,
     }, t);
 
@@ -183,17 +208,25 @@ exports.submitTestResult = async (req, res) => {
     emitNurseActivity({
       visitId: visit_id,
       recordedBy: req.user.id,
-      action: result === 'positive' ? 'hiv_test_positive' : 'hiv_test_negative',
+      action: result === 'positive'
+        ? 'hiv_test_positive'
+        : sendToPrep
+          ? 'hiv_test_negative_prep'
+          : 'hiv_test_negative',
     });
 
     return created(res, {
       testRecord,
       artEpisode,
-      visitCompleted: result === 'negative',
+      prepEpisode,
+      visitCompleted: result === 'negative' && !sendToPrep,
+      routedToPrep: sendToPrep,
       nextEntry: queueResult.nextEntry,
     }, result === 'positive'
       ? 'Positive result recorded — patient escalated to ART'
-      : 'Negative result recorded — session ended and saved to history');
+      : sendToPrep
+        ? 'Negative result recorded — patient routed to PrEP Suite'
+        : 'Negative result recorded — session ended and saved to history');
   } catch (err) {
     await t.rollback();
     console.error('HIV test submit error:', err);

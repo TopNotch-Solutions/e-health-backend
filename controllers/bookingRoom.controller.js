@@ -5,6 +5,8 @@ const {
   Patient,
   Vital,
   ScreeningAssessment,
+  DermatologyAssessment,
+  SocialWorkerAssessment,
   Consultation,
   EmergencyIntervention,
   QueueEntry,
@@ -20,6 +22,8 @@ const {
   BOOKING_ROOM_DEPARTMENT,
   isValidDisposition,
   dispositionLabel,
+  isDermatologistBookingPathway,
+  dispositionsForPathway,
   validateStateHospital,
   validateMortuary,
 } = require('../config/bookingRoomRouting');
@@ -70,16 +74,42 @@ exports.getHandover = async (req, res) => {
     });
     if (!visit) return error(res, 'Visit not found', 404);
 
-    const [vital, screeningAssessment, consultation, interventions] = await Promise.all([
-      Vital.findOne({ where: { visit_id: visitId } }),
-      ScreeningAssessment.findOne({ where: { visit_id: visitId } }),
-      Consultation.findOne({ where: { visit_id: visitId }, order: [['created_at', 'DESC']] }),
-      EmergencyIntervention.findAll({
-        where: { visit_id: visitId },
-        order: [['created_at', 'DESC']],
-        limit: 5,
-      }),
-    ]);
+    const [
+      vital,
+      screeningAssessment,
+      consultation,
+      interventions,
+      dermatologyAssessment,
+      socialWorkerAssessment,
+      bookingEntry,
+    ] = await Promise.all([
+        Vital.findOne({ where: { visit_id: visitId } }),
+        ScreeningAssessment.findOne({ where: { visit_id: visitId } }),
+        Consultation.findOne({ where: { visit_id: visitId }, order: [['created_at', 'DESC']] }),
+        EmergencyIntervention.findAll({
+          where: { visit_id: visitId },
+          order: [['created_at', 'DESC']],
+          limit: 5,
+        }),
+        DermatologyAssessment.findOne({
+          where: { visit_id: visitId },
+          include: [{ association: 'assessedBy', attributes: ['id', 'first_name', 'last_name'] }],
+        }),
+        SocialWorkerAssessment.findOne({
+          where: { visit_id: visitId, assessment_saved: true },
+          include: [{ association: 'assessedBy', attributes: ['id', 'first_name', 'last_name'] }],
+        }),
+        QueueEntry.findOne({
+          where: {
+            visit_id: visitId,
+            department: BOOKING_ROOM_DEPARTMENT,
+            status: { [Op.in]: ['waiting', 'in_progress'] },
+          },
+          order: [['created_at', 'DESC']],
+        }),
+      ]);
+
+    const pathwayRestricted = isDermatologistBookingPathway(bookingEntry?.notes);
 
     return success(res, {
       visit,
@@ -87,7 +117,11 @@ exports.getHandover = async (req, res) => {
       vitals: vital || null,
       screeningAssessment: screeningAssessment || null,
       consultation: consultation || null,
+      dermatologyAssessment: dermatologyAssessment || null,
+      socialWorkerAssessment: socialWorkerAssessment || null,
       interventions,
+      pathwayRestricted,
+      allowedDispositions: dispositionsForPathway(pathwayRestricted),
     });
   } catch (err) {
     return error(res, 'Failed to fetch handover', 500);
@@ -138,6 +172,12 @@ exports.completeDisposition = async (req, res) => {
     if (queueEntry.assigned_to !== req.user.id) {
       await t.rollback();
       return error(res, 'You can only process patients assigned to you', 403);
+    }
+
+    const pathwayRestricted = isDermatologistBookingPathway(queueEntry.notes);
+    if (pathwayRestricted && disposition !== 'state_hospital') {
+      await t.rollback();
+      return error(res, 'Patients from the Dermatologist pathway may only be transferred to a state hospital', 400);
     }
 
     let mortuaryRecord = null;

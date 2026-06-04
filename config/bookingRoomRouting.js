@@ -1,4 +1,10 @@
 const BOOKING_ROOM_DEPARTMENT = 'booking_room';
+const BOOKING_PATHWAY_DERMATOLOGIST = 'pathway:dermatologist';
+const BOOKING_PATHWAY_SOCIAL_WORKER = 'pathway:social_worker';
+
+const DERMATOLOGIST_PATHWAY_DISPOSITIONS = [
+  { value: 'state_hospital', label: 'Transfer to State Hospital', buttonClass: 'primary' },
+];
 
 const FINAL_DISPOSITIONS = [
   { value: 'state_hospital', label: 'Transfer to State Hospital', buttonClass: 'primary' },
@@ -21,6 +27,18 @@ function validateStateHospital({ destination_facility_id, reason }) {
   return null;
 }
 
+function isDermatologistBookingPathway(notes) {
+  return (notes || '').includes(BOOKING_PATHWAY_DERMATOLOGIST);
+}
+
+function isSocialWorkerBookingPathway(notes) {
+  return (notes || '').includes(BOOKING_PATHWAY_SOCIAL_WORKER);
+}
+
+function dispositionsForPathway(pathwayRestricted) {
+  return pathwayRestricted ? DERMATOLOGIST_PATHWAY_DISPOSITIONS : FINAL_DISPOSITIONS;
+}
+
 function validateMortuary({ cause_of_death, date_of_death }) {
   if (!date_of_death) return 'Date of death is required.';
   return null;
@@ -28,7 +46,13 @@ function validateMortuary({ cause_of_death, date_of_death }) {
 
 module.exports = {
   BOOKING_ROOM_DEPARTMENT,
+  BOOKING_PATHWAY_DERMATOLOGIST,
+  BOOKING_PATHWAY_SOCIAL_WORKER,
   FINAL_DISPOSITIONS,
+  DERMATOLOGIST_PATHWAY_DISPOSITIONS,
+  isDermatologistBookingPathway,
+  isSocialWorkerBookingPathway,
+  dispositionsForPathway,
   isValidDisposition,
   dispositionLabel,
   validateStateHospital,

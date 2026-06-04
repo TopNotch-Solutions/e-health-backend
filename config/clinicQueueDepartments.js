@@ -40,6 +40,7 @@ const DEPARTMENT_LABELS = {
   emergency_unit_doctor: 'Emergency Unit Doctor',
   family_planning: 'Family Planning',
   booking_room: 'Booking Room',
+  dermatologist: 'Dermatologist',
 };
 
 const ALL_QUEUE_DEPARTMENTS = [
@@ -57,6 +58,7 @@ const ALL_QUEUE_DEPARTMENTS = [
   'art_nurse',
   'emergency_unit_doctor',
   'booking_room',
+  'dermatologist',
   ...FRONT_OFFICE_ROUTING.map((r) => r.value),
 ];
 

@@ -27,6 +27,12 @@ module.exports = (sequelize, DataTypes) => {
     Visit.hasOne(models.ScreeningAssessment, { foreignKey: 'visit_id', as: 'screeningAssessment' });
     Visit.hasOne(models.HivTestResult, { foreignKey: 'visit_id', as: 'hivTestResult' });
     Visit.hasOne(models.ArtEpisode, { foreignKey: 'visit_id', as: 'artEpisode' });
+    Visit.hasOne(models.PrepEpisode, { foreignKey: 'visit_id', as: 'prepEpisode' });
+    Visit.hasOne(models.DermatologyAssessment, { foreignKey: 'visit_id', as: 'dermatologyAssessment' });
+    Visit.hasOne(models.PapSmearScreening, { foreignKey: 'visit_id', as: 'papSmearScreening' });
+    Visit.hasOne(models.SocialWorkerAssessment, { foreignKey: 'visit_id', as: 'socialWorkerAssessment' });
+    Visit.hasOne(models.FamilyPlanningRecord, { foreignKey: 'visit_id', as: 'familyPlanningRecord' });
+    Visit.hasOne(models.PediatricAssessment, { foreignKey: 'visit_id', as: 'pediatricAssessment' });
     Visit.hasMany(models.EmergencyIntervention, { foreignKey: 'visit_id', as: 'emergencyInterventions' });
     Visit.hasMany(models.Consultation, { foreignKey: 'visit_id', as: 'consultations' });
     Visit.hasMany(models.Prescription, { foreignKey: 'visit_id', as: 'prescriptions' });

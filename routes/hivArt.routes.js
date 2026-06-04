@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const hivTesterController = require('../controllers/hivTester.controller');
 const artNurseController = require('../controllers/artNurse.controller');
+const prepSuiteController = require('../controllers/prepSuite.controller');
 const { authenticate } = require('../middleware/auth');
 const { authorize } = require('../middleware/rbac');
 const { auditMiddleware } = require('../middleware/audit');
@@ -50,6 +51,32 @@ router.get(
   '/patients/:patientId/art-history',
   authorize('vitals', 'read'),
   artNurseController.getPatientArtHistory
+);
+
+router.get(
+  '/prep-suite/handover/:visitId',
+  authorize('vitals', 'read'),
+  prepSuiteController.getHandover
+);
+
+router.post(
+  '/prep-suite/record-injection',
+  authorize('vitals', 'create'),
+  auditMiddleware('vitals'),
+  prepSuiteController.recordInjection
+);
+
+router.post(
+  '/prep-suite/complete-session',
+  authorize('vitals', 'update'),
+  auditMiddleware('vitals'),
+  prepSuiteController.completePrepSession
+);
+
+router.get(
+  '/patients/:patientId/prep-history',
+  authorize('vitals', 'read'),
+  prepSuiteController.getPatientPrepHistory
 );
 
 module.exports = router;

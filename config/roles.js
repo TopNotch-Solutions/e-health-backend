@@ -39,6 +39,7 @@ const ROLES = {
   MASTER_DOCTOR: 'master_doctor',
   BOOKING_ROOM: 'booking_room',
   ART_NURSE: 'art_nurse',
+  DERMATOLOGIST: 'dermatologist',
 };
 
 const PERMISSIONS = {
@@ -249,6 +250,8 @@ const ROLE_PERMISSIONS = {
   },
   [ROLES.SOCIAL_WORKER]: {
     patient: ['read'],
+    vitals: ['create', 'read', 'update'],
+    queue: ['read', 'update'],
     social_worker_case: ['create', 'read', 'update'],
   },
   [ROLES.DATA_ANALYST]: {
@@ -295,9 +298,14 @@ ROLE_PERMISSIONS[ROLES.EMERGENCY_UNIT_NURSE] = {
 
 ROLE_PERMISSIONS[ROLES.EMERGENCY_UNIT_DOCTOR] = CLINIC_DOCTOR_PERMISSIONS;
 ROLE_PERMISSIONS[ROLES.MASTER_DOCTOR] = CLINIC_DOCTOR_PERMISSIONS;
+ROLE_PERMISSIONS[ROLES.DERMATOLOGIST] = CLINIC_DOCTOR_PERMISSIONS;
 ROLE_PERMISSIONS[ROLES.FAMILY_PLANNER] = {
-  patient: ['read', 'update'],
-  queue: ['read', 'push'],
+  patient: ['read'],
+  vitals: ['create', 'read', 'update'],
+  consultation: ['create', 'read', 'update'],
+  prescription: ['create', 'read'],
+  inventory: ['read'],
+  queue: ['read', 'update'],
 };
 ROLE_PERMISSIONS[ROLES.BOOKING_ROOM] = {
   ...CLINIC_FRONT_OFFICE_PERMISSIONS,

@@ -2,6 +2,7 @@ const SCREENING_NURSE_DEPARTMENT = 'screening_nurse';
 
 const SCREENING_DESTINATIONS = [
   { value: 'master_doctor', label: 'Master Doctor' },
+  { value: 'dermatologist', label: 'Dermatologist' },
   { value: 'hiv_tester', label: 'HIV Testing Room' },
   { value: 'emergency_unit', label: 'Emergency Unit' },
 ];

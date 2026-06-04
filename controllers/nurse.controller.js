@@ -1,5 +1,14 @@
 const { v4: uuidv4 } = require('uuid');
-const { Vital, Visit, Patient, QueueEntry, ScreeningAssessment, sequelize } = require('../models');
+const {
+  Vital,
+  Visit,
+  Patient,
+  QueueEntry,
+  ScreeningAssessment,
+  PapSmearScreening,
+  PediatricAssessment,
+  sequelize,
+} = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
 const { getIO } = require('../socket');
@@ -427,18 +436,59 @@ exports.getHandoverVitals = async (req, res) => {
   }
 };
 
-// Clinical timeline for clinic doctor (parameter + optional screening handover)
+function serializePediatricForTimeline(assessment) {
+  if (!assessment) return null;
+  const plain = assessment.toJSON ? assessment.toJSON() : assessment;
+  if (!plain.assessment_saved) return null;
+  return {
+    temperature: plain.temperature != null ? Number(plain.temperature) : null,
+    weight: plain.weight != null ? Number(plain.weight) : null,
+    general_assessment: plain.general_assessment,
+    assessment_saved_at: plain.assessment_saved_at,
+    routed_to_master_doctor_at: plain.routed_to_master_doctor_at,
+    assessedBy: plain.assessedBy || null,
+  };
+}
+
+function serializePapSmearForTimeline(screening) {
+  if (!screening) return null;
+  const plain = screening.toJSON ? screening.toJSON() : screening;
+  if (!plain.findings_saved) return null;
+  return {
+    screening_details: plain.screening_details,
+    test_observations: plain.test_observations,
+    clinical_findings: plain.clinical_findings,
+    severity: plain.severity,
+    findings_saved_at: plain.findings_saved_at,
+    escalated_to_master_doctor_at: plain.escalated_to_master_doctor_at,
+    screenedBy: plain.screenedBy || null,
+  };
+}
+
+// Clinical timeline for clinic doctor (parameter + optional screening + pap smear handover)
 exports.getClinicalTimeline = async (req, res) => {
   try {
-    const vital = await Vital.findOne({
-      where: { visit_id: req.params.visitId },
-      include: [{ association: 'recordedBy', attributes: ['id', 'first_name', 'last_name'] }],
-    });
+    const visitId = req.params.visitId;
 
-    const screeningAssessment = await ScreeningAssessment.findOne({
-      where: { visit_id: req.params.visitId },
-      include: [{ association: 'recordedBy', attributes: ['id', 'first_name', 'last_name'] }],
-    });
+    const [vital, screeningAssessment, papSmearScreening, pediatricAssessment] = await Promise.all([
+      Vital.findOne({
+        where: { visit_id: visitId },
+        include: [{ association: 'recordedBy', attributes: ['id', 'first_name', 'last_name'] }],
+      }),
+      ScreeningAssessment.findOne({
+        where: { visit_id: visitId },
+        include: [{ association: 'recordedBy', attributes: ['id', 'first_name', 'last_name'] }],
+      }),
+      PapSmearScreening.findOne({
+        where: { visit_id: visitId },
+        include: [{ association: 'screenedBy', attributes: ['id', 'first_name', 'last_name'] }],
+        order: [['updated_at', 'DESC']],
+      }),
+      PediatricAssessment.findOne({
+        where: { visit_id: visitId },
+        include: [{ association: 'assessedBy', attributes: ['id', 'first_name', 'last_name'] }],
+      }),
+    ]);
 
     let pathType = null;
     if (vital?.visit_classification === 'follow_up') {
@@ -450,6 +500,8 @@ exports.getClinicalTimeline = async (req, res) => {
     return success(res, {
       vitals: vital || null,
       screeningAssessment: screeningAssessment || null,
+      papSmearScreening: serializePapSmearForTimeline(papSmearScreening),
+      pediatricAssessment: serializePediatricForTimeline(pediatricAssessment),
       pathType,
     });
   } catch (err) {
