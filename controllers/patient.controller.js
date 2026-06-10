@@ -9,6 +9,8 @@ const { generatePatientNumber, generateVisitNumber, generateEmergencyId } = requ
 const { success, created, error, paginated } = require('../utils/response');
 const { getIO } = require('../socket');
 const queueService = require('../services/queueService');
+const visitService = require('../services/visitService');
+const patientMedicalHistoryService = require('../services/patientMedicalHistoryService');
 const { emitFrontOfficeRegistration } = require('../services/notificationService');
 const billingChargeService = require('../services/billingChargeService');
 const { assertCanEditPatientToday } = require('../services/frontOfficeService');
@@ -266,10 +268,24 @@ exports.search = async (req, res) => {
       ],
     });
 
-    const patients = rows.map((p) => {
-      const json = p.toJSON();
-      return { ...json, profile_complete: isProfileComplete(p) };
-    });
+    const patients = await Promise.all(
+      rows.map(async (p) => {
+        const json = p.toJSON();
+        const activeVisit = await visitService.findActiveVisitForPatient(
+          p.id,
+          req.user.facility_id
+        );
+        const activeQueue = activeVisit
+          ? await visitService.findActiveQueueEntryForPatient(p.id, req.user.facility_id)
+          : null;
+        return {
+          ...json,
+          profile_complete: isProfileComplete(p),
+          has_active_visit: Boolean(activeVisit),
+          active_visit: visitService.serializeActiveVisitSummary(activeVisit, activeQueue),
+        };
+      })
+    );
 
     return success(res, { patients, count: patients.length });
   } catch (err) {
@@ -324,6 +340,23 @@ exports.getById = async (req, res) => {
     return success(res, patient);
   } catch (err) {
     return error(res, 'Failed to fetch patient', 500);
+  }
+};
+
+// Clinical medical history — all stops & vitals, no staff identities
+exports.getClinicalMedicalHistory = async (req, res) => {
+  try {
+    const patient = await Patient.findByPk(req.params.id, { attributes: ['id'] });
+    if (!patient) return error(res, 'Patient not found', 404);
+
+    const history = await patientMedicalHistoryService.getClinicalMedicalHistory(
+      patient.id,
+      req.user.facility_id
+    );
+    return success(res, history);
+  } catch (err) {
+    console.error('Get clinical medical history error:', err);
+    return error(res, 'Failed to fetch clinical medical history', 500);
   }
 };
 
@@ -407,6 +440,12 @@ exports.createVisit = async (req, res) => {
   try {
     const patient = await Patient.findByPk(req.params.id);
     if (!patient) return error(res, 'Patient not found', 404);
+
+    await visitService.assertNoActiveVisitForPatient(
+      patient.id,
+      req.user.facility_id,
+      t
+    );
 
     const {
       mode_of_arrival,

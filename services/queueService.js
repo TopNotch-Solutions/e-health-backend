@@ -77,17 +77,14 @@ async function pushToQueue({ visit_id, department, priority = 'normal', pushed_b
     if (existingForPatient.visit_id === visit_id) {
       return existingForPatient;
     }
-    // Stale queue row from another visit — close it so the current visit can proceed
-    await existingForPatient.update(
-      {
-        status: 'completed',
-        completed_at: new Date(),
-        notes: existingForPatient.notes
-          ? `${existingForPatient.notes} (auto-closed: new visit queued)`
-          : 'Auto-closed: patient queued on a new visit',
-      },
-      { transaction }
+    const label = DEPARTMENT_LABELS[department] || department;
+    const visitNo = existingForPatient.visit?.visit_number || 'an active visit';
+    const err = new Error(
+      `Patient is already in the ${label} queue on visit ${visitNo}. `
+      + 'They can only be routed within their current visit — not checked in again.'
     );
+    err.statusCode = 409;
+    throw err;
   }
 
   // Get next position in queue for this department

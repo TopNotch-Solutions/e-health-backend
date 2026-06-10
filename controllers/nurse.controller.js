@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const { Op } = require('sequelize');
 const {
   Vital,
   Visit,
@@ -465,12 +466,52 @@ function serializePapSmearForTimeline(screening) {
   };
 }
 
+async function findLatestMedicalHistoryVitals(patientId, excludeVisitId = null) {
+  const visitWhere = { patient_id: patientId };
+  if (excludeVisitId) {
+    visitWhere.id = { [Op.ne]: excludeVisitId };
+  }
+
+  const rows = await Vital.findAll({
+    where: {
+      [Op.or]: [
+        { current_medications: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] } },
+        { social_history: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] } },
+        { immunization_status: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] } },
+        { chief_complaint: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] } },
+        { physical_examination: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: '' }] } },
+      ],
+    },
+    include: [
+      {
+        association: 'visit',
+        where: visitWhere,
+        required: true,
+        attributes: ['id', 'visit_number', 'created_at'],
+      },
+    ],
+    order: [['recorded_at', 'DESC']],
+    limit: 1,
+  });
+
+  const vital = rows[0] || null;
+  if (!vital) return null;
+
+  return {
+    vitals: vital,
+    visit_number: vital.visit?.visit_number || null,
+    recorded_at: vital.recorded_at || vital.visit?.created_at || null,
+  };
+}
+
 // Clinical timeline for clinic doctor (parameter + optional screening + pap smear handover)
 exports.getClinicalTimeline = async (req, res) => {
   try {
     const visitId = req.params.visitId;
+    const visit = await Visit.findByPk(visitId, { attributes: ['id', 'patient_id'] });
+    if (!visit) return error(res, 'Visit not found', 404);
 
-    const [vital, screeningAssessment, papSmearScreening, pediatricAssessment] = await Promise.all([
+    const [vital, screeningAssessment, papSmearScreening, pediatricAssessment, medicalHistory] = await Promise.all([
       Vital.findOne({
         where: { visit_id: visitId },
         include: [{ association: 'recordedBy', attributes: ['id', 'first_name', 'last_name'] }],
@@ -488,6 +529,7 @@ exports.getClinicalTimeline = async (req, res) => {
         where: { visit_id: visitId },
         include: [{ association: 'assessedBy', attributes: ['id', 'first_name', 'last_name'] }],
       }),
+      findLatestMedicalHistoryVitals(visit.patient_id, visitId),
     ]);
 
     let pathType = null;
@@ -503,6 +545,7 @@ exports.getClinicalTimeline = async (req, res) => {
       papSmearScreening: serializePapSmearForTimeline(papSmearScreening),
       pediatricAssessment: serializePediatricForTimeline(pediatricAssessment),
       pathType,
+      medicalHistory: medicalHistory || null,
     });
   } catch (err) {
     return error(res, 'Failed to fetch clinical timeline', 500);

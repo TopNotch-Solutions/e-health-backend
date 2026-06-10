@@ -21,6 +21,13 @@ router.get('/', authorize('patient', 'read'), patientController.getAll);
 // Get single patient
 router.get('/:id', authorize('patient', 'read'), patientController.getById);
 
+// Clinical medical history (stops + vitals, no staff names)
+router.get(
+  '/:id/clinical-medical-history',
+  authorize('patient', 'read'),
+  patientController.getClinicalMedicalHistory
+);
+
 // Get patient visit history
 router.get('/:id/history', authorize('patient', 'read'), patientController.getHistory);
 
