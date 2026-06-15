@@ -1,4 +1,4 @@
-const { PharmacyInventory } = require('../models');
+const { PharmacyInventory, Facility } = require('../models');
 const { Op } = require('sequelize');
 
 /**
@@ -54,6 +54,35 @@ async function findInventoryForMedication(medicationName, facilityId, transactio
   });
 }
 
+async function findMedicationAvailabilityElsewhere(medicationName, facilityId, requiredQty = 1) {
+  const need = Math.max(1, Number(requiredQty) || 1);
+  const rows = await PharmacyInventory.findAll({
+    where: {
+      medication_name: medicationName,
+      facility_id: { [Op.ne]: facilityId },
+      quantity_in_stock: { [Op.gte]: need },
+    },
+    include: [{
+      model: Facility,
+      as: 'facility',
+      attributes: ['id', 'name', 'province', 'district'],
+    }],
+    order: [['quantity_in_stock', 'DESC']],
+    limit: 5,
+  });
+
+  return rows.map((row) => {
+    const plain = row.toJSON ? row.toJSON() : row;
+    const location = [plain.facility?.district, plain.facility?.province].filter(Boolean).join(', ');
+    return {
+      facility_id: plain.facility_id,
+      facility_name: plain.facility?.name || 'Another facility',
+      location: location || null,
+      quantity_in_stock: plain.quantity_in_stock,
+    };
+  });
+}
+
 async function enrichItemsWithStock(items, facilityId, transaction) {
   if (!items?.length) return [];
 
@@ -93,6 +122,7 @@ async function enrichPrescription(prescription, facilityId, transaction) {
 module.exports = {
   resolveStockStatus,
   findInventoryForMedication,
+  findMedicationAvailabilityElsewhere,
   enrichItemsWithStock,
   enrichPrescription,
 };

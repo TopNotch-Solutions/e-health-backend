@@ -79,11 +79,11 @@ exports.createAndPush = async (req, res) => {
     const { visit_id, queue_entry_id } = req.body;
 
     if (!visit_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id is required', 400);
     }
     if (!queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'queue_entry_id is required', 400);
     }
 
@@ -95,13 +95,13 @@ exports.createAndPush = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
     const nurseEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!nurseEntry || nurseEntry.visit_id !== visit_id || nurseEntry.department !== 'nurse') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid nurse queue entry for this visit', 400);
     }
 
@@ -123,8 +123,8 @@ exports.createAndPush = async (req, res) => {
 
     await t.commit();
 
-    const io = getIO();
     try {
+      const io = getIO();
       const nurseEntries = await queueService.getQueue('nurse', req.user.facility_id);
       io.to('room:nurse').emit('queue:refresh', { department: 'nurse', entries: nurseEntries });
       io.to('room:nurse').emit('queue:patient_moved', {
@@ -142,15 +142,15 @@ exports.createAndPush = async (req, res) => {
         const doctorEntries = await queueService.getQueue('doctor', req.user.facility_id);
         io.to('room:doctor').emit('queue:refresh', { department: 'doctor', entries: doctorEntries });
       }
+
+      emitNurseActivity({ visitId: visit_id, vitalId: vital.id, recordedBy: req.user.id, action: 'push_to_doctor' });
     } catch (emitErr) {
       console.error('Nurse push socket emit error:', emitErr.message);
     }
 
-    emitNurseActivity({ visitId: visit_id, vitalId: vital.id, recordedBy: req.user.id, action: 'push_to_doctor' });
-
     return created(res, { vital, nextEntry: result.nextEntry }, 'Vitals recorded and patient pushed to doctor');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Create and push error:', err);
     const message = err.message || 'Failed to record vitals and push to doctor';
     const status = message.includes('already in the') ? 409 : 500;
@@ -175,15 +175,15 @@ exports.parameterNursePush = async (req, res) => {
     } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
     if (!isValidClassification(visit_classification)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit classification must be follow_up or sick', 400);
     }
     if (!next_department || !isValidDestination(visit_classification, next_department)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid routing destination for this visit classification', 400);
     }
 
@@ -192,7 +192,7 @@ exports.parameterNursePush = async (req, res) => {
 
     const vitalError = validateVitalsForClassification(visit_classification, vitalAttrs);
     if (vitalError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, vitalError, 400);
     }
 
@@ -204,25 +204,25 @@ exports.parameterNursePush = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
     const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!queueEntry || queueEntry.visit_id !== visit_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid queue entry for this visit', 400);
     }
     if (queueEntry.department !== PARAMETER_NURSE_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Queue entry is not for the parameter nurse department', 400);
     }
     if (queueEntry.status !== 'in_progress') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Patient must be started before submitting vitals', 400);
     }
     if (queueEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only process patients assigned to you', 403);
     }
 
@@ -249,8 +249,8 @@ exports.parameterNursePush = async (req, res) => {
 
     await t.commit();
 
-    const io = getIO();
     try {
+      const io = getIO();
       await emitQueueRefresh(io, PARAMETER_NURSE_DEPARTMENT, req.user.facility_id);
       io.to(`room:${PARAMETER_NURSE_DEPARTMENT}`).emit('queue:patient_moved', {
         entryId: queue_entry_id,
@@ -266,20 +266,20 @@ exports.parameterNursePush = async (req, res) => {
         });
         await emitQueueRefresh(io, next_department, req.user.facility_id);
       }
+
+      emitNurseActivity({
+        visitId: visit_id,
+        vitalId: vital.id,
+        recordedBy: req.user.id,
+        action: 'parameter_nurse_push',
+      });
     } catch (emitErr) {
       console.error('Parameter nurse push socket emit error:', emitErr.message);
     }
 
-    emitNurseActivity({
-      visitId: visit_id,
-      vitalId: vital.id,
-      recordedBy: req.user.id,
-      action: 'parameter_nurse_push',
-    });
-
     return created(res, { vital, nextEntry: result.nextEntry }, 'Vitals recorded and patient routed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Parameter nurse push error:', err);
     const message = err.message || 'Failed to record vitals and route patient';
     const status = message.includes('already in the') ? 409 : 500;
@@ -302,17 +302,17 @@ exports.screeningNursePush = async (req, res) => {
     } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
     if (!next_department || !isValidScreeningDestination(next_department)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid routing destination', 400);
     }
 
     const fieldError = validateAssessmentFields({ symptoms, reason, diagnosis });
     if (fieldError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, fieldError, 400);
     }
 
@@ -324,25 +324,25 @@ exports.screeningNursePush = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
     const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!queueEntry || queueEntry.visit_id !== visit_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid queue entry for this visit', 400);
     }
     if (queueEntry.department !== SCREENING_NURSE_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Queue entry is not for the screening nurse department', 400);
     }
     if (queueEntry.status !== 'in_progress') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Patient must be started before submitting assessment', 400);
     }
     if (queueEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only process patients assigned to you', 403);
     }
 
@@ -372,8 +372,8 @@ exports.screeningNursePush = async (req, res) => {
 
     await t.commit();
 
-    const io = getIO();
     try {
+      const io = getIO();
       await emitQueueRefresh(io, SCREENING_NURSE_DEPARTMENT, req.user.facility_id);
       io.to(`room:${SCREENING_NURSE_DEPARTMENT}`).emit('queue:patient_moved', {
         entryId: queue_entry_id,
@@ -389,19 +389,19 @@ exports.screeningNursePush = async (req, res) => {
         });
         await emitQueueRefresh(io, next_department, req.user.facility_id);
       }
+
+      emitNurseActivity({
+        visitId: visit_id,
+        recordedBy: req.user.id,
+        action: 'screening_nurse_push',
+      });
     } catch (emitErr) {
       console.error('Screening nurse push socket emit error:', emitErr.message);
     }
 
-    emitNurseActivity({
-      visitId: visit_id,
-      recordedBy: req.user.id,
-      action: 'screening_nurse_push',
-    });
-
     return created(res, { assessment, nextEntry: result.nextEntry }, 'Assessment recorded and patient routed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Screening nurse push error:', err);
     const message = err.message || 'Failed to submit assessment and route patient';
     const status = message.includes('already in the') ? 409 : 500;

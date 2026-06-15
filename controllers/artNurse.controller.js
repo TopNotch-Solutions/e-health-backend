@@ -10,6 +10,7 @@ const {
 } = require('../models');
 const { success, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const {
   ART_NURSE_DEPARTMENT,
@@ -97,28 +98,28 @@ exports.updatePathway = async (req, res) => {
     const { visit_id, queue_entry_id, section, data, advance } = req.body;
 
     if (!visit_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id is required', 400);
     }
 
     const episode = await findActiveEpisodeForVisit(visit_id, t);
     if (!episode) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'No active ART episode for this visit', 404);
     }
 
     if (queue_entry_id) {
       const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
       if (!queueEntry || queueEntry.visit_id !== visit_id) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Invalid queue entry', 400);
       }
       if (queueEntry.department !== ART_NURSE_DEPARTMENT) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Queue entry is not for ART', 400);
       }
       if (queueEntry.status === 'in_progress' && queueEntry.assigned_to !== req.user.id) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'You can only update patients assigned to you', 403);
       }
     }
@@ -128,7 +129,7 @@ exports.updatePathway = async (req, res) => {
 
     if (section === 'counseling' && episode.pathway_state === 'day_1') {
       if (!data?.completed) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Counseling milestone must be marked completed', 400);
       }
       pathwayData[COUNSELING_MILESTONE_KEY] = true;
@@ -174,7 +175,7 @@ exports.updatePathway = async (req, res) => {
         notes: data.notes?.trim() || null,
       };
     } else {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid section for current pathway state', 400);
     }
 
@@ -184,12 +185,12 @@ exports.updatePathway = async (req, res) => {
     if (advance) {
       const readiness = advanceReadiness(episode.pathway_state, pathwayData);
       if (!readiness.ready) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, readiness.reason, 400);
       }
       const next = nextState(episode.pathway_state);
       if (!next) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Already at final pathway state', 400);
       }
       newState = next;
@@ -205,7 +206,7 @@ exports.updatePathway = async (req, res) => {
     await t.commit();
     return success(res, serializeEpisode(episode), advance ? 'Pathway advanced' : 'Pathway updated');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('ART pathway update error:', err);
     return error(res, err.message || 'Failed to update pathway', 500);
   }
@@ -217,44 +218,44 @@ exports.completeArtSession = async (req, res) => {
     const { visit_id, queue_entry_id } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const episode = await findActiveEpisodeForVisit(visit_id, t);
     if (!episode) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'No active ART episode', 404);
     }
 
     if (episode.pathway_state !== 'maintenance') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Complete the treatment pathway before ending the ART queue session', 400);
     }
 
     const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!queueEntry || queueEntry.visit_id !== visit_id || queueEntry.department !== ART_NURSE_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid ART queue entry', 400);
     }
     if (queueEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only complete patients assigned to you', 403);
     }
-
-    const visit = await Visit.findByPk(visit_id, { transaction: t });
-    await visit.update({
-      status: 'completed',
-      completed_at: new Date(),
-      current_department: null,
-      current_queue_position: null,
-    }, { transaction: t });
 
     await queueService.completeEntry(queue_entry_id, {
       nextDepartment: null,
       pushed_by: req.user.id,
       notes: 'ART intake session complete — maintenance ongoing',
     }, t);
+
+    await clinicBillingService.applyVisitEndState({
+      visitId: visit_id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+      notes: 'ART session complete',
+    });
 
     await t.commit();
 
@@ -268,7 +269,7 @@ exports.completeArtSession = async (req, res) => {
 
     return success(res, { episode: serializeEpisode(episode) }, 'ART session completed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('ART complete session error:', err);
     return error(res, err.message || 'Failed to complete session', 500);
   }

@@ -12,6 +12,7 @@ const {
   resolveStockStatus,
 } = require('../services/pharmacyStockStatus');
 const billingChargeService = require('../services/billingChargeService');
+const queueService = require('../services/queueService');
 
 // Get pharmacy queue (pending prescriptions)
 exports.getQueue = async (req, res) => {
@@ -80,7 +81,7 @@ exports.dispense = async (req, res) => {
       transaction: t,
     });
     if (!prescription) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Prescription not found', 404);
     }
 
@@ -106,7 +107,7 @@ exports.dispense = async (req, res) => {
         });
 
         if (!liveStock.can_dispense) {
-          await t.rollback();
+          if (!t.finished) await t.rollback();
           return error(
             res,
             `${item.medication_name} is out of stock (${liveStock.quantity_in_stock} available, ${item.quantity} required)`,
@@ -189,10 +190,26 @@ exports.dispense = async (req, res) => {
 
     await prescription.update({ status: newStatus }, { transaction: t });
 
+    if (reviewedTotal === n && n > 0) {
+      const pharmacyEntry = await queueService.findActiveEntryForVisit(
+        prescription.visit_id,
+        'pharmacy',
+        t
+      );
+      if (pharmacyEntry) {
+        await queueService.completeEntry(
+          pharmacyEntry.id,
+          { pushed_by: req.user.id, notes: 'Pharmacy dispensing complete' },
+          t
+        );
+      }
+    }
+
     await t.commit();
 
     try {
       notificationService.emitBillingCharge({
+        facility_id: req.user.facility_id,
         visit_id: prescription.visit_id,
         prescription_id: id,
         reason: 'medications_dispensed',
@@ -215,7 +232,7 @@ exports.dispense = async (req, res) => {
       prescription: enriched,
     }, 'Medications dispensed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Dispense error:', err);
     return error(res, 'Failed to dispense medications', 500);
   }
@@ -237,7 +254,7 @@ exports.generateReferral = async (req, res) => {
     });
 
     if (!prescription) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Prescription not found or no unavailable items', 404);
     }
 
@@ -265,7 +282,7 @@ exports.generateReferral = async (req, res) => {
 
     return created(res, { referral, unavailable_medications: prescription.items.map(i => i.medication_name) }, 'Referral generated - patient marked as returning');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Generate referral error:', err);
     return error(res, 'Failed to generate referral', 500);
   }

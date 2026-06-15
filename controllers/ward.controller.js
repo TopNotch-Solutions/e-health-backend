@@ -176,7 +176,7 @@ exports.createWard = async (req, res) => {
     } = req.body;
 
     if (!name || !ward_number || !ward_type) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'name, ward_number, and ward_type are required', 400);
     }
 
@@ -235,7 +235,7 @@ exports.createWard = async (req, res) => {
 
     return created(res, payload, message);
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Create ward error:', err);
     return error(res, err.message || 'Failed to create ward', 500);
   }
@@ -543,7 +543,7 @@ exports.confirmArrival = async (req, res) => {
     if (req.body?.arrived_at) {
       arrivedDate = new Date(req.body.arrived_at);
       if (Number.isNaN(arrivedDate.getTime())) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Invalid arrival date', 400);
       }
     }
@@ -553,15 +553,15 @@ exports.confirmArrival = async (req, res) => {
       transaction: t,
     });
     if (!admission) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Admission not found', 404);
     }
     if (!admission.bed?.ward || admission.bed.ward.facility_id !== req.user.facility_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Admission not found', 404);
     }
     if (admission.status !== 'pending_arrival') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'This admission is not awaiting arrival confirmation', 400);
     }
 
@@ -592,7 +592,7 @@ exports.confirmArrival = async (req, res) => {
 
     return success(res, formatAdmissionForStaff(refreshed), 'Patient arrival confirmed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Confirm arrival error:', err);
     return error(res, 'Failed to confirm arrival', 500);
   }

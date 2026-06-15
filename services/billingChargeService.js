@@ -15,10 +15,12 @@ const {
   Patient,
   Admission,
   SonarRequest,
+  Facility,
   sequelize,
 } = require('../models');
 const { getFeeAmount, FEE_KEYS } = require('./billingFeeService');
 const { findInventoryForMedication } = require('./pharmacyStockStatus');
+const { isClinicFacility } = require('../config/clinicRoles');
 
 function money(n) {
   return Math.round(parseFloat(n) * 100) / 100;
@@ -33,6 +35,11 @@ async function loadVisitWithPatient(visitId, transaction) {
 
 function isPrivatePatient(patient) {
   return patient?.payment_type === 'private';
+}
+
+async function usesClinicFlatBilling(facilityId, transaction) {
+  const facility = await Facility.findByPk(facilityId, { transaction });
+  return isClinicFacility(facility);
 }
 
 async function hasCharge(billId, category, referenceId, transaction) {
@@ -103,6 +110,19 @@ async function addCharge({
 }
 
 async function chargeAdmissionFee(visitId, facilityId, transaction) {
+  if (await usesClinicFlatBilling(facilityId, transaction)) {
+    const amount = await getFeeAmount(facilityId, FEE_KEYS.CLINIC_VISIT, transaction);
+    return addCharge({
+      visitId,
+      facilityId,
+      category: 'clinic_visit',
+      description: 'Clinic visit fee (all activities)',
+      amount,
+      referenceId: visitId,
+      transaction,
+    });
+  }
+
   const amount = await getFeeAmount(facilityId, FEE_KEYS.ADMISSION, transaction);
   return addCharge({
     visitId,
@@ -116,6 +136,8 @@ async function chargeAdmissionFee(visitId, facilityId, transaction) {
 }
 
 async function chargeConsultationFee(visitId, consultationId, facilityId, transaction) {
+  if (await usesClinicFlatBilling(facilityId, transaction)) return null;
+
   const amount = await getFeeAmount(facilityId, FEE_KEYS.DOCTOR_CONSULTATION, transaction);
   return addCharge({
     visitId,
@@ -130,6 +152,8 @@ async function chargeConsultationFee(visitId, consultationId, facilityId, transa
 
 /** Bill a single line when the pharmacist hands medication to the patient. */
 async function chargeDispensedItem(visitId, prescriptionItem, facilityId, transaction) {
+  if (await usesClinicFlatBilling(facilityId, transaction)) return null;
+
   const row = prescriptionItem.toJSON ? prescriptionItem.toJSON() : prescriptionItem;
   const medName = row.medication_name;
   const inv = await findInventoryForMedication(medName, facilityId, transaction);
@@ -163,6 +187,8 @@ async function chargePrescriptionItems(visitId, prescriptionId, items, facilityI
 }
 
 async function chargeSonarFee(visitId, sonarRequestId, facilityId, transaction) {
+  if (await usesClinicFlatBilling(facilityId, transaction)) return null;
+
   const request = await SonarRequest.findByPk(sonarRequestId, { transaction });
   if (!request) return null;
 
@@ -197,6 +223,7 @@ function wardDaysBetween(admission) {
 }
 
 async function chargeWardStay(visitId, admission, facilityId, transaction) {
+  if (await usesClinicFlatBilling(facilityId, transaction)) return null;
   if (!admission) return null;
   const days = wardDaysBetween(admission);
   const daily = await getFeeAmount(facilityId, FEE_KEYS.WARD_DAILY, transaction);

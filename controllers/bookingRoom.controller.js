@@ -143,11 +143,11 @@ exports.completeDisposition = async (req, res) => {
     } = req.body;
 
     if (!visit_id || !queue_entry_id || !disposition) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id, queue_entry_id, and disposition are required', 400);
     }
     if (!isValidDisposition(disposition)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid disposition', 400);
     }
 
@@ -156,27 +156,27 @@ exports.completeDisposition = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
     const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!queueEntry || queueEntry.visit_id !== visit_id || queueEntry.department !== BOOKING_ROOM_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid booking room queue entry', 400);
     }
     if (queueEntry.status !== 'in_progress') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Patient must be started before disposition', 400);
     }
     if (queueEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only process patients assigned to you', 403);
     }
 
     const pathwayRestricted = isDermatologistBookingPathway(queueEntry.notes);
     if (pathwayRestricted && disposition !== 'state_hospital') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Patients from the Dermatologist pathway may only be transferred to a state hospital', 400);
     }
 
@@ -185,7 +185,7 @@ exports.completeDisposition = async (req, res) => {
     if (disposition === 'state_hospital') {
       const validationError = validateStateHospital({ destination_facility_id, reason });
       if (validationError) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, validationError, 400);
       }
 
@@ -194,7 +194,7 @@ exports.completeDisposition = async (req, res) => {
         !targetFacility
         || !['hospital', 'health_center'].includes(targetFacility.type)
       ) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Select a valid state hospital from the list', 400);
       }
 
@@ -217,7 +217,7 @@ exports.completeDisposition = async (req, res) => {
     } else if (disposition === 'mortuary') {
       const validationError = validateMortuary({ cause_of_death, date_of_death });
       if (validationError) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, validationError, 400);
       }
 
@@ -267,7 +267,7 @@ exports.completeDisposition = async (req, res) => {
       ? 'Patient processed to Mortuary'
       : 'Patient referred to state hospital');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Booking room disposition error:', err);
     return error(res, err.message || 'Failed to complete disposition', 500);
   }

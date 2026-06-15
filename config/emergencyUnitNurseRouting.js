@@ -8,6 +8,13 @@ const NURSE_ROUTING_DESTINATIONS = [
 
 const DESTINATION_SET = new Set(NURSE_ROUTING_DESTINATIONS.map((d) => d.value));
 
+const EMERGENCY_UNIT_VISIT_CLASSIFICATION = 'sick';
+
+const {
+  validateVitalsForClassification,
+} = require('./parameterNurseRouting');
+const { validateAssessmentFields } = require('./screeningNurseRouting');
+
 function isValidNurseDestination(value) {
   return DESTINATION_SET.has(value);
 }
@@ -23,11 +30,23 @@ function validateInterventions(interventions) {
   return null;
 }
 
+function validateEmergencyUnitNurseIntake(body) {
+  const vitalError = validateVitalsForClassification(
+    EMERGENCY_UNIT_VISIT_CLASSIFICATION,
+    { ...body, visit_classification: EMERGENCY_UNIT_VISIT_CLASSIFICATION }
+  );
+  if (vitalError) return vitalError;
+
+  return validateAssessmentFields(body);
+}
+
 module.exports = {
   EMERGENCY_UNIT_NURSE_DEPARTMENT,
   EMERGENCY_UNIT_DOCTOR_DEPARTMENT,
+  EMERGENCY_UNIT_VISIT_CLASSIFICATION,
   NURSE_ROUTING_DESTINATIONS,
   isValidNurseDestination,
   routingLabel,
   validateInterventions,
+  validateEmergencyUnitNurseIntake,
 };

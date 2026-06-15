@@ -229,12 +229,24 @@ async function completeEntry(entryId, { nextDepartment, nextPriority, notes, pus
         pushed_by,
         notes,
       }, t);
+    } else if (pushed_by) {
+      const visit = await Visit.findByPk(entry.visit_id, { transaction: t });
+      if (visit) {
+        const clinicBillingService = require('./clinicBillingService');
+        await clinicBillingService.routePrivatePatientToBilling({
+          visitId: entry.visit_id,
+          facilityId: visit.facility_id,
+          userId: pushed_by,
+          notes,
+          transaction: t,
+        });
+      }
     }
 
     if (!transaction) await t.commit();
     return { completedEntry: entry, nextEntry };
   } catch (err) {
-    if (!transaction) await t.rollback();
+    if (!transaction && !t.finished) await t.rollback();
     throw err;
   }
 }

@@ -11,6 +11,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const { emitNurseActivity } = require('../services/notificationService');
 const {
@@ -136,25 +137,25 @@ exports.recordInjection = async (req, res) => {
     } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!queueEntry || queueEntry.visit_id !== visit_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid queue entry for this visit', 400);
     }
     if (queueEntry.department !== PREP_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Queue entry is not for the PrEP suite', 400);
     }
     if (queueEntry.status !== 'in_progress') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Patient must be started before recording injection', 400);
     }
     if (queueEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only process patients assigned to you', 403);
     }
 
@@ -163,11 +164,11 @@ exports.recordInjection = async (req, res) => {
       episode = await ensurePrepEpisode(visit_id, req.user.id, t);
     }
     if (!episode) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
     if (episode.injection_administered) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'PrEP injection already recorded for this visit', 409);
     }
 
@@ -201,7 +202,7 @@ exports.recordInjection = async (req, res) => {
 
     return created(res, { episode: serializeEpisode(episode) }, 'PrEP injection recorded');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('PrEP injection record error:', err);
     return error(res, err.message || 'Failed to record injection', 500);
   }
@@ -213,31 +214,30 @@ exports.completePrepSession = async (req, res) => {
     const { visit_id, queue_entry_id } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const episode = await findActiveEpisodeForVisit(visit_id, t);
     if (!episode) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'No active PrEP session for this visit', 404);
     }
     if (!episode.injection_administered) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Record and confirm PrEP injection before finalizing the session', 400);
     }
 
     const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!queueEntry || queueEntry.visit_id !== visit_id || queueEntry.department !== PREP_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid PrEP suite queue entry', 400);
     }
     if (queueEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only finalize patients assigned to you', 403);
     }
 
-    const visit = await Visit.findByPk(visit_id, { transaction: t });
     const completedAt = new Date();
 
     await episode.update({
@@ -245,18 +245,19 @@ exports.completePrepSession = async (req, res) => {
       completed_at: completedAt,
     }, { transaction: t });
 
-    await visit.update({
-      status: 'completed',
-      completed_at: completedAt,
-      current_department: null,
-      current_queue_position: null,
-    }, { transaction: t });
-
     await queueService.completeEntry(queue_entry_id, {
       nextDepartment: null,
       pushed_by: req.user.id,
       notes: 'PrEP injection administered — consultation finalized',
     }, t);
+
+    await clinicBillingService.applyVisitEndState({
+      visitId: visit_id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+      notes: 'PrEP session complete',
+    });
 
     await t.commit();
 
@@ -280,7 +281,7 @@ exports.completePrepSession = async (req, res) => {
 
     return success(res, { episode: serializeEpisode(episode) }, 'PrEP session finalized and saved to patient record');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('PrEP complete session error:', err);
     return error(res, err.message || 'Failed to finalize session', 500);
   }

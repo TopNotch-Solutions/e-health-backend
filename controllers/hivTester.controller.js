@@ -12,6 +12,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const { emitNurseActivity } = require('../services/notificationService');
 const {
@@ -67,17 +68,17 @@ exports.submitTestResult = async (req, res) => {
     } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
     if (!result || !['negative', 'positive'].includes(result)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'result must be negative or positive', 400);
     }
 
     const sendToPrep = result === 'negative' && route_to_prep === true;
     if (result === 'negative' && route_to_prep !== true && route_to_prep !== false) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'route_to_prep is required for negative results (true or false)', 400);
     }
 
@@ -89,31 +90,31 @@ exports.submitTestResult = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
     const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!queueEntry || queueEntry.visit_id !== visit_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid queue entry for this visit', 400);
     }
     if (queueEntry.department !== HIV_TESTER_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Queue entry is not for the HIV testing room', 400);
     }
     if (queueEntry.status !== 'in_progress') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Patient must be started before submitting test result', 400);
     }
     if (queueEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only process patients assigned to you', 403);
     }
 
     const priorTest = await HivTestResult.findOne({ where: { visit_id }, transaction: t });
     if (priorTest) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'HIV test result already recorded for this visit', 409);
     }
 
@@ -160,12 +161,7 @@ exports.submitTestResult = async (req, res) => {
         enrolled_at: new Date(),
       }, { transaction: t });
     } else {
-      await visit.update({
-        status: 'completed',
-        completed_at: new Date(),
-        current_department: null,
-        current_queue_position: null,
-      }, { transaction: t });
+      // Visit completion handled after queue hand-off (clinic private patients may route to billing).
     }
 
     const queueResult = await queueService.completeEntry(queue_entry_id, {
@@ -181,6 +177,16 @@ exports.submitTestResult = async (req, res) => {
           : 'HIV negative — testing session complete',
       pushed_by: req.user.id,
     }, t);
+
+    if (!nextDepartment) {
+      await clinicBillingService.applyVisitEndState({
+        visitId: visit_id,
+        facilityId: req.user.facility_id,
+        userId: req.user.id,
+        transaction: t,
+        notes: 'HIV testing session complete',
+      });
+    }
 
     await t.commit();
 
@@ -228,7 +234,7 @@ exports.submitTestResult = async (req, res) => {
         ? 'Negative result recorded — patient routed to PrEP Suite'
         : 'Negative result recorded — session ended and saved to history');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('HIV test submit error:', err);
     return error(res, err.message || 'Failed to submit test result', 500);
   }

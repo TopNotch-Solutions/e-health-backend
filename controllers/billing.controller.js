@@ -15,6 +15,7 @@ const billingChargeService = require('../services/billingChargeService');
 const revenueService = require('../services/revenueService');
 const queueService = require('../services/queueService');
 const notificationService = require('../services/notificationService');
+const { loadBillForFacility, loadVisitForFacility } = require('../services/billingFacilityGuard');
 
 function paymentTotalsMatch(total, cash, eft) {
   const t = billingChargeService.money(total);
@@ -86,6 +87,8 @@ exports.getQueue = async (req, res) => {
 
 exports.getBillByVisit = async (req, res) => {
   try {
+    await loadVisitForFacility(req.params.visitId, req.user.facility_id);
+
     const bill = await Bill.findOne({
       where: { visit_id: req.params.visitId },
       include: [
@@ -95,7 +98,7 @@ exports.getBillByVisit = async (req, res) => {
           as: 'patient',
           attributes: ['id', 'first_name', 'last_name', 'patient_number', 'payment_type'],
         },
-        { model: Visit, as: 'visit', attributes: ['id', 'visit_number', 'status'] },
+        { model: Visit, as: 'visit', attributes: ['id', 'visit_number', 'status', 'facility_id'] },
       ],
     });
 
@@ -108,6 +111,7 @@ exports.getBillByVisit = async (req, res) => {
       balance_due: billingChargeService.money(total - parseFloat(bill.paid_amount || 0)),
     });
   } catch (err) {
+    if (err.statusCode) return error(res, err.message, err.statusCode);
     return error(res, 'Failed to fetch bill', 500);
   }
 };
@@ -117,9 +121,11 @@ exports.addCharge = async (req, res) => {
   try {
     const { visit_id, description, category, amount, reference_id } = req.body;
     if (!visit_id || !description || !category || amount === undefined) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id, description, category, and amount are required', 400);
     }
+
+    await loadVisitForFacility(visit_id, req.user.facility_id, t);
 
     const result = await billingChargeService.addCharge({
       visitId: visit_id,
@@ -137,7 +143,7 @@ exports.addCharge = async (req, res) => {
     }
     return created(res, result, 'Charge added');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Add charge error:', err);
     return error(res, 'Failed to add charge', 500);
   }
@@ -190,44 +196,37 @@ exports.recordPayment = async (req, res) => {
   try {
     const { bill_id, cash_amount, eft_amount } = req.body;
     if (!bill_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'bill_id is required', 400);
     }
 
     const cash = parseFloat(cash_amount) || 0;
     const eft = parseFloat(eft_amount) || 0;
     if (cash < 0 || eft < 0) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Payment amounts cannot be negative', 400);
     }
     if (cash === 0 && eft === 0) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Enter cash and/or EFT amount', 400);
     }
 
     try {
       await revenueService.requireCurrentShift(req.user.facility_id, req.user.id);
     } catch (shiftErr) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, shiftErr.message, shiftErr.statusCode || 400);
     }
 
-    const bill = await Bill.findByPk(bill_id, {
-      include: [{ model: Patient, as: 'patient' }],
-      transaction: t,
-    });
-    if (!bill) {
-      await t.rollback();
-      return error(res, 'Bill not found', 404);
-    }
+    const bill = await loadBillForFacility(bill_id, req.user.facility_id, t);
     if (bill.patient?.payment_type !== 'private') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'State patients are not billed', 400);
     }
 
     const total = billingChargeService.money(bill.total_amount);
     if (!paymentTotalsMatch(total, cash, eft)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(
         res,
         `Cash (N$ ${cash.toFixed(2)}) + EFT (N$ ${eft.toFixed(2)}) must equal total N$ ${total.toFixed(2)}`,
@@ -251,28 +250,34 @@ exports.recordPayment = async (req, res) => {
 
     await t.commit();
 
-    notificationService.emitBillingCharge({
-      visit_id: bill.visit_id,
-      bill_id: bill.id,
-      status: 'paid',
-    });
+    try {
+      notificationService.emitBillingCharge({
+        facility_id: req.user.facility_id,
+        visit_id: bill.visit_id,
+        bill_id: bill.id,
+        status: 'paid',
+      });
+    } catch (emitErr) {
+      console.error('Billing emit after payment:', emitErr.message);
+    }
 
-    return success(res, bill, 'Payment recorded — patient discharged');
+    const paidBill = await Bill.findByPk(bill.id);
+    return success(res, paidBill, 'Payment recorded — patient discharged');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Record payment error:', err);
-    return error(res, 'Failed to record payment', 500);
+    return error(res, err.message || 'Failed to record payment', err.statusCode || 500);
   }
 };
 
 exports.waiveBill = async (req, res) => {
   try {
-    const bill = await Bill.findByPk(req.params.id);
-    if (!bill) return error(res, 'Bill not found', 404);
+    const bill = await loadBillForFacility(req.params.id, req.user.facility_id);
 
     await bill.update({ status: 'waived' });
     return success(res, bill, 'Bill waived');
   } catch (err) {
+    if (err.statusCode) return error(res, err.message, err.statusCode);
     return error(res, 'Failed to waive bill', 500);
   }
 };
@@ -280,11 +285,7 @@ exports.waiveBill = async (req, res) => {
 exports.finalizeBill = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const bill = await Bill.findByPk(req.params.id, { transaction: t });
-    if (!bill) {
-      await t.rollback();
-      return error(res, 'Bill not found', 404);
-    }
+    const bill = await loadBillForFacility(req.params.id, req.user.facility_id, t);
 
     await billingChargeService.finalizeBillForDischarge(
       bill.visit_id,
@@ -293,10 +294,11 @@ exports.finalizeBill = async (req, res) => {
     );
 
     await t.commit();
-    const refreshed = await Bill.findByPk(req.params.id, { include: [{ association: 'items' }] });
+    const refreshed = await loadBillForFacility(req.params.id, req.user.facility_id);
     return success(res, refreshed, 'Bill finalized — pending payment');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
+    if (err.statusCode) return error(res, err.message, err.statusCode);
     return error(res, 'Failed to finalize bill', 500);
   }
 };

@@ -43,17 +43,75 @@ function clinicalForDepartment(visit, department) {
   const v = visit;
   const dept = department;
 
-  if (['parameter_nurse', 'nurse', 'emergency_unit'].includes(dept)) {
+  if (['parameter_nurse', 'nurse', 'anc_nurse'].includes(dept)) {
     return { vitals: sanitizeVitals(v.vitals) };
+  }
+  if (dept === 'emergency_unit') {
+    const out = { vitals: sanitizeVitals(v.vitals) };
+    if (v.screeningAssessment) {
+      out.screening_assessment = pick(v.screeningAssessment, ['symptoms', 'reason', 'diagnosis', 'notes']);
+    }
+    if (v.emergencyInterventions?.length) {
+      out.emergency_interventions = v.emergencyInterventions.map((row) =>
+        pick(row, ['interventions', 'notes', 'created_at'])
+      ).filter(Boolean);
+    }
+    return Object.keys(out).length ? out : null;
   }
   if (dept === 'screening_nurse' && v.screeningAssessment) {
     return pick(v.screeningAssessment, ['symptoms', 'reason', 'diagnosis', 'notes']);
   }
-  if (['master_doctor', 'doctor', 'emergency_unit_doctor', 'dermatologist'].includes(dept)) {
+  if (dept === 'dermatologist' && v.dermatologyAssessment) {
+    return pick(v.dermatologyAssessment, [
+      'clinical_observations',
+      'skin_assessment',
+      'differential_diagnosis',
+      'treatment_plan',
+    ]);
+  }
+  if (['master_doctor', 'doctor', 'emergency_unit_doctor'].includes(dept)) {
     const rows = (v.consultations || []).map((c) =>
       pick(c, ['diagnosis', 'notes', 'actions_taken', 'created_at'])
     ).filter(Boolean);
     return rows.length ? { consultations: rows } : null;
+  }
+  if (dept === 'family_planning' && v.familyPlanningRecord) {
+    return pick(v.familyPlanningRecord, [
+      'intervention_type',
+      'subdermal_insertion_date',
+      'subdermal_insertion_notes',
+      'subdermal_replacement_date',
+      'subdermal_replacement_notes',
+      'device_type',
+      'device_insertion_date',
+      'device_insertion_notes',
+      'device_removal_date',
+      'device_removal_notes',
+      'oral_contraceptive_log',
+      'circumcision_surgical_criteria',
+      'circumcision_procedure_notes',
+      'circumcision_post_op_metrics',
+      'session_completed_at',
+    ]);
+  }
+  if (dept === 'prep' && v.prepEpisode) {
+    return pick(v.prepEpisode, [
+      'status',
+      'injection_administered',
+      'session_data',
+      'enrolled_at',
+      'injection_administered_at',
+      'completed_at',
+    ]);
+  }
+  if (dept === 'art_nurse' && v.artEpisode) {
+    return pick(v.artEpisode, [
+      'pathway_state',
+      'status',
+      'pathway_data',
+      'enrolled_at',
+      'state_entered_at',
+    ]);
   }
   if (dept === 'pap_smear' && v.papSmearScreening) {
     return pick(v.papSmearScreening, [
@@ -143,6 +201,11 @@ async function getClinicalMedicalHistory(patientId, facilityId) {
       { association: 'socialWorkerAssessment' },
       { association: 'pediatricAssessment' },
       { association: 'hivTestResult' },
+      { association: 'familyPlanningRecord' },
+      { association: 'prepEpisode' },
+      { association: 'artEpisode' },
+      { association: 'dermatologyAssessment' },
+      { association: 'emergencyInterventions' },
       { association: 'consultations' },
       { association: 'prescriptions', include: [{ association: 'items' }] },
       { association: 'labRequests' },

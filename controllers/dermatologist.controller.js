@@ -10,6 +10,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const billingChargeService = require('../services/billingChargeService');
 const { createPrescriptionWithItems } = require('../services/clinicPrescriptionService');
@@ -201,7 +202,7 @@ exports.saveObservations = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -212,7 +213,7 @@ exports.saveObservations = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -223,7 +224,7 @@ exports.saveObservations = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
@@ -231,7 +232,7 @@ exports.saveObservations = async (req, res) => {
     const withUser = await findAssessmentForVisit(visit_id);
     return success(res, { assessment: serializeAssessment(withUser) }, 'Clinical observations saved');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Dermatologist save observations error:', err);
     return error(res, err.message || 'Failed to save observations', 500);
   }
@@ -242,7 +243,7 @@ exports.completeSession = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -253,7 +254,7 @@ exports.completeSession = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -264,27 +265,29 @@ exports.completeSession = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
-    const { assessment, visit } = saved;
+    const { assessment } = saved;
     await upsertDermatologyConsultation(assessment, req.user.id, t);
 
     const completedAt = new Date();
     await assessment.update({ session_completed_at: completedAt }, { transaction: t });
-    await visit.update({
-      status: 'completed',
-      completed_at: completedAt,
-      current_department: null,
-      current_queue_position: null,
-    }, { transaction: t });
 
     await queueService.completeEntry(queue_entry_id, {
       nextDepartment: null,
       pushed_by: req.user.id,
       notes: 'Dermatology session complete — no further routing',
     }, t);
+
+    await clinicBillingService.applyVisitEndState({
+      visitId: visit_id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+      notes: 'Dermatology session complete',
+    });
 
     await t.commit();
 
@@ -302,7 +305,7 @@ exports.completeSession = async (req, res) => {
 
     return success(res, { assessment: serializeAssessment(assessment) }, 'Session saved and completed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Dermatologist complete session error:', err);
     return error(res, err.message || 'Failed to complete session', 500);
   }
@@ -313,11 +316,11 @@ exports.routeToPharmacy = async (req, res) => {
   try {
     const { visit_id, queue_entry_id, items } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
     if (!items?.length) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Add at least one medication to route to pharmacy', 400);
     }
 
@@ -328,7 +331,7 @@ exports.routeToPharmacy = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -339,7 +342,7 @@ exports.routeToPharmacy = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
@@ -424,7 +427,7 @@ exports.routeToPharmacy = async (req, res) => {
       nextEntry: queueResult.nextEntry,
     }, 'Prescription sent to pharmacy');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Dermatologist pharmacy route error:', err);
     return error(res, err.message || 'Failed to route to pharmacy', 500);
   }
@@ -436,7 +439,7 @@ exports.routeToBookingRoom = async (req, res) => {
     const { visit_id, queue_entry_id } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -447,7 +450,7 @@ exports.routeToBookingRoom = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -458,7 +461,7 @@ exports.routeToBookingRoom = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
@@ -515,7 +518,7 @@ exports.routeToBookingRoom = async (req, res) => {
       nextEntry: queueResult.nextEntry,
     }, 'Patient routed to Booking Room');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Dermatologist route to booking error:', err);
     return error(res, err.message || 'Failed to route patient', 500);
   }

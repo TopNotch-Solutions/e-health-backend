@@ -9,6 +9,7 @@ const {
 } = require('../services/pharmacySupervisorMetricsService');
 const {
   findInventoryForMedication,
+  findMedicationAvailabilityElsewhere,
   resolveStockStatus,
 } = require('../services/pharmacyStockStatus');
 const {
@@ -94,10 +95,20 @@ exports.checkMedicationStock = async (req, res) => {
       requiredQty: quantity,
     });
 
-    return success(res, {
+    const payload = {
       medication_name: String(medication_name).trim(),
       ...status,
-    });
+    };
+
+    if (status.stock_status === 'out_of_stock') {
+      payload.availability_elsewhere = await findMedicationAvailabilityElsewhere(
+        String(medication_name).trim(),
+        req.user.facility_id,
+        quantity
+      );
+    }
+
+    return success(res, payload);
   } catch (err) {
     console.error('Check medication stock error:', err);
     return error(res, 'Failed to check stock', 500);
@@ -276,9 +287,9 @@ exports.receiveStock = async (req, res) => {
     if (!quantity || quantity <= 0) return error(res, 'Valid quantity is required', 400);
 
     const item = await PharmacyInventory.findByPk(id, { transaction: t });
-    if (!item) { await t.rollback(); return error(res, 'Item not found', 404); }
+    if (!item) { if (!t.finished) await t.rollback(); return error(res, 'Item not found', 404); }
     if (item.facility_id !== req.user.facility_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Item not found', 404);
     }
 
@@ -308,7 +319,7 @@ exports.receiveStock = async (req, res) => {
       'Receipt recorded — awaiting confirmation by another pharmacy supervisor'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     return error(res, 'Failed to record stock receipt', 500);
   }
 };
@@ -369,15 +380,15 @@ exports.confirmReceipt = async (req, res) => {
     });
 
     if (!tx || tx.type !== 'received' || tx.status !== 'pending') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Pending receipt not found', 404);
     }
     if (!tx.inventory || tx.inventory.facility_id !== req.user.facility_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Pending receipt not found', 404);
     }
     if (tx.performed_by === req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(
         res,
         'You cannot confirm a receipt you recorded. Another pharmacy supervisor must confirm.',
@@ -416,7 +427,7 @@ exports.confirmReceipt = async (req, res) => {
 
     return success(res, serializeReceipt(loaded), 'Stock receipt confirmed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Confirm receipt error:', err);
     return error(res, 'Failed to confirm receipt', 500);
   }
@@ -477,9 +488,9 @@ exports.adjustStock = async (req, res) => {
     if (!quantity || !type) return error(res, 'quantity and type are required', 400);
 
     const item = await PharmacyInventory.findByPk(id, { transaction: t });
-    if (!item) { await t.rollback(); return error(res, 'Item not found', 404); }
+    if (!item) { if (!t.finished) await t.rollback(); return error(res, 'Item not found', 404); }
     if (item.facility_id !== req.user.facility_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Item not found', 404);
     }
 
@@ -507,7 +518,7 @@ exports.adjustStock = async (req, res) => {
     });
     return success(res, item, 'Stock adjusted');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     return error(res, 'Failed to adjust stock', 500);
   }
 };

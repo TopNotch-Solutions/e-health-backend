@@ -53,6 +53,9 @@ function initSocket(server) {
     if (socket.userRole === 'pediatric_corner') {
       socket.join('room:pediatric');
     }
+    if (socket.userRole === 'emergency_unit_nurse') {
+      socket.join('room:emergency_unit');
+    }
     // Clinic/hospital pharmacy staff share the facility pharmacy queue
     if (socket.userRole === 'pharmacist' || socket.userRole === 'pharmacy_supervisor') {
       socket.join('room:pharmacy');

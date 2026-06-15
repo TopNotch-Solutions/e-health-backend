@@ -69,6 +69,7 @@ app.use('/api/v1/social-worker-suite', require('./routes/socialWorkerSuite.route
 app.use('/api/v1/family-planning-suite', require('./routes/familyPlanningSuite.routes'));
 app.use('/api/v1/pediatric-corner', require('./routes/pediatricCorner.routes'));
 app.use('/api/v1/consultations', require('./routes/doctor.routes'));
+app.use('/api/v1/icd10', require('./routes/icd10.routes'));
 app.use('/api/v1/prescriptions', require('./routes/pharmacy.routes'));
 app.use('/api/v1/lab', require('./routes/lab.routes'));
 app.use('/api/v1/sonar', require('./routes/sonar.routes'));

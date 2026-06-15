@@ -18,6 +18,7 @@ exports.reconcileShift = async (req, res) => {
     const result = await revenueService.reconcileShift(req.params.id, req.user.id, {
       verified_cash,
       notes,
+      facilityId: facilityIdFromReq(req),
     });
 
     const message = result.has_deficit

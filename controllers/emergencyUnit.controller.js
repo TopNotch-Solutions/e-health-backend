@@ -16,9 +16,11 @@ const { getIO } = require('../socket');
 const {
   EMERGENCY_UNIT_NURSE_DEPARTMENT,
   EMERGENCY_UNIT_DOCTOR_DEPARTMENT,
+  EMERGENCY_UNIT_VISIT_CLASSIFICATION,
   isValidNurseDestination,
   routingLabel,
   validateInterventions,
+  validateEmergencyUnitNurseIntake,
 } = require('../config/emergencyUnitNurseRouting');
 const {
   EMERGENCY_UNIT_DOCTOR_DEPARTMENT: EU_DOCTOR_DEPT,
@@ -112,6 +114,77 @@ function emitPharmacyNotification(io, { pharmacyEntry, prescription }) {
   io.to('room:pharmacy').emit('pharmacy:new_prescription', payload);
 }
 
+const VITAL_FIELDS = [
+  'temperature', 'blood_pressure_systolic', 'blood_pressure_diastolic',
+  'pulse_rate', 'respiratory_rate', 'weight', 'height', 'oxygen_saturation',
+  'allergies', 'accompanied_by', 'chief_complaint', 'onset_at',
+  'aggravating_factors', 'alleviating_factors', 'current_medications',
+  'immunization_status', 'social_history', 'physical_examination', 'notes',
+  'visit_classification',
+];
+
+function pickVitalAttributes(body) {
+  const attrs = {};
+  for (const field of VITAL_FIELDS) {
+    if (body[field] !== undefined) {
+      attrs[field] = body[field] === '' ? null : body[field];
+    }
+  }
+  return attrs;
+}
+
+async function upsertVisitVitals({ visit_id, user_id, visit_classification, body, transaction }) {
+  const vitalAttrs = pickVitalAttributes(body);
+  vitalAttrs.visit_classification = visit_classification;
+
+  const existing = await Vital.findOne({ where: { visit_id }, transaction });
+  if (existing) {
+    await existing.update({ ...vitalAttrs, recorded_by: user_id }, { transaction });
+    return existing;
+  }
+
+  return Vital.create(
+    {
+      id: uuidv4(),
+      visit_id,
+      recorded_by: user_id,
+      ...vitalAttrs,
+    },
+    { transaction }
+  );
+}
+
+async function upsertScreeningAssessment({
+  visit_id,
+  user_id,
+  symptoms,
+  reason,
+  diagnosis,
+  transaction,
+}) {
+  const payload = {
+    symptoms: symptoms.trim(),
+    reason: reason.trim(),
+    diagnosis: diagnosis.trim(),
+    recorded_by: user_id,
+  };
+
+  const existing = await ScreeningAssessment.findOne({ where: { visit_id }, transaction });
+  if (existing) {
+    await existing.update(payload, { transaction });
+    return existing;
+  }
+
+  return ScreeningAssessment.create(
+    {
+      id: uuidv4(),
+      visit_id,
+      ...payload,
+    },
+    { transaction }
+  );
+}
+
 exports.getNurseHandover = async (req, res) => {
   try {
     return success(res, await getHandoverPayload(req.params.visitId));
@@ -135,28 +208,39 @@ exports.nurseSubmitAndRoute = async (req, res) => {
       visit_id,
       queue_entry_id,
       next_department,
+      symptoms,
+      reason,
+      diagnosis,
       interventions,
       notes,
       items,
     } = req.body;
 
+    const visit_classification = EMERGENCY_UNIT_VISIT_CLASSIFICATION;
+
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
     if (!next_department || !isValidNurseDestination(next_department)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid routing destination', 400);
+    }
+
+    const intakeError = validateEmergencyUnitNurseIntake(req.body);
+    if (intakeError) {
+      if (!t.finished) await t.rollback();
+      return error(res, intakeError, 400);
     }
 
     const interventionError = validateInterventions(interventions);
     if (interventionError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, interventionError, 400);
     }
 
     if (next_department === 'pharmacy' && (!items || !items.length)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Add at least one medication to route to the pharmacist', 400);
     }
 
@@ -165,23 +249,40 @@ exports.nurseSubmitAndRoute = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
     const nurseEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
     if (!nurseEntry || nurseEntry.visit_id !== visit_id || nurseEntry.department !== EMERGENCY_UNIT_NURSE_DEPARTMENT) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Invalid emergency unit queue entry', 400);
     }
     if (nurseEntry.status !== 'in_progress') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Patient must be started before submitting', 400);
     }
     if (nurseEntry.assigned_to !== req.user.id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'You can only process patients assigned to you', 403);
     }
+
+    await upsertVisitVitals({
+      visit_id,
+      user_id: req.user.id,
+      visit_classification,
+      body: req.body,
+      transaction: t,
+    });
+
+    await upsertScreeningAssessment({
+      visit_id,
+      user_id: req.user.id,
+      symptoms,
+      reason,
+      diagnosis,
+      transaction: t,
+    });
 
     await EmergencyIntervention.create({
       id: uuidv4(),
@@ -198,6 +299,7 @@ exports.nurseSubmitAndRoute = async (req, res) => {
       notes: notes?.trim() || null,
       actions_taken: JSON.stringify({
         emergency_unit_nurse: true,
+        visit_classification,
         routed_to: next_department,
       }),
       transaction: t,
@@ -258,7 +360,7 @@ exports.nurseSubmitAndRoute = async (req, res) => {
       ? 'Interventions recorded — patient routed to Pharmacy'
       : `Interventions recorded — patient routed to ${routingLabel(next_department)}`);
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('EU nurse submit error:', err);
     return error(res, err.message || 'Failed to submit', 500);
   }
@@ -270,19 +372,19 @@ exports.doctorTransferBookingRoom = async (req, res) => {
     const { visit_id, queue_entry_id, diagnosis, notes, items } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const diagnosisError = validateDiagnosis(diagnosis);
     if (diagnosisError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, diagnosisError, 400);
     }
 
     const visit = await Visit.findByPk(visit_id, { transaction: t });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -366,7 +468,7 @@ exports.doctorTransferBookingRoom = async (req, res) => {
       ? 'Assessment saved — prescription to pharmacy, patient sent to Booking Room'
       : 'Assessment saved — patient transferred to Booking Room');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('EU doctor booking error:', err);
     return error(res, err.message || 'Failed to transfer', 500);
   }
@@ -378,24 +480,24 @@ exports.doctorPrescribePharmacy = async (req, res) => {
     const { visit_id, queue_entry_id, diagnosis, notes, items } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const diagnosisError = validateDiagnosis(diagnosis);
     if (diagnosisError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, diagnosisError, 400);
     }
 
     if (!items?.length) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Add at least one medication to route to pharmacy', 400);
     }
 
     const visit = await Visit.findByPk(visit_id, { transaction: t });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -463,7 +565,7 @@ exports.doctorPrescribePharmacy = async (req, res) => {
       queueCompleted: Boolean(queueResult.completedEntry),
     }, 'Prescription sent to pharmacy — consultation completed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('EU doctor pharmacy error:', err);
     return error(res, err.message || 'Failed to prescribe', 500);
   }

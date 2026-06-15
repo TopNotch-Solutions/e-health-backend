@@ -111,7 +111,7 @@ exports.routeToMasterDoctor = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -122,26 +122,26 @@ exports.routeToMasterDoctor = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
     const eligibleCheck = await assertPediatricEligible(visit_id, t);
     if (eligibleCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, eligibleCheck.error, eligibleCheck.status);
     }
 
     const validationError = validateAssessmentFields(req.body);
     if (validationError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, validationError, 400);
     }
 
     const { visit } = eligibleCheck;
     let assessment = await PediatricAssessment.findOne({ where: { visit_id }, transaction: t });
     if (assessment && isSessionFinalized(assessment)) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'This pediatric assessment is already completed', 409);
     }
 
@@ -223,7 +223,7 @@ exports.routeToMasterDoctor = async (req, res) => {
       nextEntry: queueResult.nextEntry,
     }, 'Pediatric assessment saved — patient sent to Master Doctor');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Pediatric route to master doctor error:', err);
     return error(res, err.message || 'Failed to route patient', 500);
   }

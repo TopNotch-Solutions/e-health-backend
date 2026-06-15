@@ -173,7 +173,7 @@ exports.createPrescription = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -181,11 +181,11 @@ exports.createPrescription = async (req, res) => {
 
     const consultation = await Consultation.findByPk(consultation_id, { transaction: t });
     if (!consultation) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Consultation not found. Complete diagnosis and try again.', 404);
     }
     if (consultation.visit_id !== visit_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Consultation does not belong to this visit', 400);
     }
 
@@ -251,7 +251,7 @@ exports.createPrescription = async (req, res) => {
         );
       }
     } catch (queueErr) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       const msg = queueErr.message || 'Failed to update patient queue';
       const status = msg.includes('already in the') ? 409 : 400;
       return error(res, msg, status);
@@ -314,7 +314,7 @@ exports.createPrescription = async (req, res) => {
       'Prescription sent to pharmacy — consultation completed'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Create prescription error:', err);
     const message =
       err.message ||
@@ -342,14 +342,14 @@ exports.createLabOrder = async (req, res) => {
     } = req.body;
 
     if (!visit_id || !tests || !Array.isArray(tests) || tests.length === 0) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and tests array are required', 400);
     }
 
     const hasPrescriptionBundle =
       Array.isArray(prescriptionItemsBody) && prescriptionItemsBody.length > 0;
     if (hasPrescriptionBundle && !consultation_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'consultation_id is required when prescription items are sent with a lab order', 400);
     }
 
@@ -358,18 +358,18 @@ exports.createLabOrder = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
     if (hasPrescriptionBundle) {
       const consultation = await Consultation.findByPk(consultation_id, { transaction: t });
       if (!consultation) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Consultation not found. Complete diagnosis and try again.', 404);
       }
       if (consultation.visit_id !== visit_id) {
-        await t.rollback();
+        if (!t.finished) await t.rollback();
         return error(res, 'Consultation does not belong to this visit', 400);
       }
     }
@@ -543,7 +543,7 @@ exports.createLabOrder = async (req, res) => {
       message
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Create lab order error:', err);
     const message = err.message || 'Failed to send to laboratory';
     const status = message.includes('already in the') ? 409 : 500;
@@ -570,7 +570,7 @@ exports.createSonarRequest = async (req, res) => {
     } = req.body;
 
     if (!visit_id || !scan_type) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and scan_type are required', 400);
     }
 
@@ -579,7 +579,7 @@ exports.createSonarRequest = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -690,7 +690,7 @@ exports.createSonarRequest = async (req, res) => {
       'Patient referred to ultrasound — removed from your queue'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Create sonar request error:', err);
     const message = err.message || 'Failed to create sonar request';
     const status = message.includes('already in the') ? 409 : 500;
@@ -712,7 +712,7 @@ exports.admitPatient = async (req, res) => {
       equipment_checklist,
     } = req.body;
     if (!visit_id || !bed_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and bed_id are required', 400);
     }
 
@@ -721,7 +721,7 @@ exports.admitPatient = async (req, res) => {
       transaction: t,
     });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -731,11 +731,11 @@ exports.admitPatient = async (req, res) => {
     // Check bed availability
     const bed = await Bed.findByPk(bed_id, { include: [{ model: Ward, as: 'ward' }], transaction: t });
     if (!bed) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Bed not found', 404);
     }
     if (bed.status !== 'available') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Bed is not available', 400);
     }
 
@@ -851,7 +851,7 @@ exports.admitPatient = async (req, res) => {
       diet ? 'Patient admitted — diet sent to kitchen' : 'Patient admitted'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Admit patient error:', err);
     return error(res, 'Failed to admit patient', 500);
   }
@@ -892,6 +892,7 @@ exports.dischargePatient = async (req, res) => {
         await t.commit();
 
         notificationService.emitBillingCharge({
+          facility_id: req.user.facility_id,
           visit_id: id,
           patient: visit.patient,
           queueEntry,
@@ -936,7 +937,7 @@ exports.dischargePatient = async (req, res) => {
     await t.commit();
     return success(res, { visit_id: id, status: 'discharged' }, 'Patient discharged');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Discharge error:', err);
     return error(res, 'Failed to discharge patient', 500);
   }
@@ -1160,23 +1161,23 @@ exports.clinicScheduleFollowUp = async (req, res) => {
     const { visit_id, queue_entry_id, diagnosis, follow_up_date, notes, items } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const diagnosisError = validateDiagnosis(diagnosis);
     if (diagnosisError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, diagnosisError, 400);
     }
     if (!follow_up_date) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'follow_up_date is required', 400);
     }
 
     const visit = await Visit.findByPk(visit_id, { transaction: t });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -1259,7 +1260,7 @@ exports.clinicScheduleFollowUp = async (req, res) => {
         : 'Follow-up scheduled and consultation completed'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Clinic follow-up error:', err);
     return error(res, err.message || 'Failed to schedule follow-up', 500);
   }
@@ -1272,19 +1273,19 @@ exports.clinicTransferEmergencyUnit = async (req, res) => {
     const { visit_id, queue_entry_id, diagnosis, notes } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const diagnosisError = validateDiagnosis(diagnosis);
     if (diagnosisError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, diagnosisError, 400);
     }
 
     const visit = await Visit.findByPk(visit_id, { transaction: t });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -1353,7 +1354,7 @@ exports.clinicTransferEmergencyUnit = async (req, res) => {
       queueEntry: queueResult.nextEntry,
     }, 'Patient transferred to Emergency Unit');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Clinic emergency unit error:', err);
     return error(res, err.message || 'Failed to transfer to emergency unit', 500);
   }
@@ -1366,19 +1367,19 @@ exports.clinicTransferBookingRoom = async (req, res) => {
     const { visit_id, queue_entry_id, diagnosis, notes, items } = req.body;
 
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
     const diagnosisError = validateDiagnosis(diagnosis);
     if (diagnosisError) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, diagnosisError, 400);
     }
 
     const visit = await Visit.findByPk(visit_id, { transaction: t });
     if (!visit) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Visit not found', 404);
     }
 
@@ -1462,7 +1463,7 @@ exports.clinicTransferBookingRoom = async (req, res) => {
         : 'Patient transferred to Booking Room'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Clinic booking room transfer error:', err);
     const message = err.message || 'Failed to transfer to booking room';
     const status = message.includes('already in the') ? 409 : 500;

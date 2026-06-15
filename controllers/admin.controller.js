@@ -908,9 +908,33 @@ exports.getAuditLogs = async (req, res) => {
       limit: parseInt(limit),
       offset: parseInt(offset),
       order: [['timestamp', 'DESC']],
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'first_name', 'last_name', 'email'],
+      }],
     });
 
-    return paginated(res, rows, count, page, limit);
+    const data = rows.map((row) => {
+      const plain = row.toJSON();
+      const userName = plain.user
+        ? [plain.user.first_name, plain.user.last_name].filter(Boolean).join(' ').trim()
+        : null;
+      return {
+        id: plain.id,
+        user_id: plain.user_id,
+        user_name: userName || null,
+        user_email: plain.user?.email || null,
+        action: plain.action,
+        resource: plain.resource,
+        resource_id: plain.resource_id,
+        details: plain.details,
+        ip_address: plain.ip_address,
+        timestamp: plain.timestamp,
+      };
+    });
+
+    return paginated(res, data, count, page, limit);
   } catch (err) {
     return error(res, 'Failed to fetch audit logs', 500);
   }

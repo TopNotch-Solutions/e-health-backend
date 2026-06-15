@@ -9,6 +9,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const { emitNurseActivity } = require('../services/notificationService');
 const {
@@ -147,7 +148,7 @@ exports.saveScreening = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -158,7 +159,7 @@ exports.saveScreening = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -169,7 +170,7 @@ exports.saveScreening = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
@@ -177,7 +178,7 @@ exports.saveScreening = async (req, res) => {
     const withUser = await findScreeningForVisit(visit_id);
     return success(res, { screening: serializeScreening(withUser) }, 'Screening recorded');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Pap smear save screening error:', err);
     return error(res, err.message || 'Failed to save screening', 500);
   }
@@ -188,7 +189,7 @@ exports.completeSession = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -199,7 +200,7 @@ exports.completeSession = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -210,30 +211,32 @@ exports.completeSession = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
-    const { screening, visit } = saved;
+    const { screening } = saved;
     if (screening.severity === 'severe') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Severe cases must be escalated to the Master Doctor', 400);
     }
 
     const completedAt = new Date();
     await screening.update({ session_completed_at: completedAt }, { transaction: t });
-    await visit.update({
-      status: 'completed',
-      completed_at: completedAt,
-      current_department: null,
-      current_queue_position: null,
-    }, { transaction: t });
 
     await queueService.completeEntry(queue_entry_id, {
       nextDepartment: null,
       pushed_by: req.user.id,
       notes: 'Pap smear screening complete — routine',
     }, t);
+
+    await clinicBillingService.applyVisitEndState({
+      visitId: visit_id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+      notes: 'Pap smear screening complete',
+    });
 
     await t.commit();
 
@@ -257,7 +260,7 @@ exports.completeSession = async (req, res) => {
 
     return success(res, { screening: serializeScreening(screening) }, 'Pap smear session finalized');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Pap smear complete session error:', err);
     return error(res, err.message || 'Failed to finalize session', 500);
   }
@@ -268,7 +271,7 @@ exports.escalateToMasterDoctor = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -279,7 +282,7 @@ exports.escalateToMasterDoctor = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -290,13 +293,13 @@ exports.escalateToMasterDoctor = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
     const { screening } = saved;
     if (screening.severity !== 'severe') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Only severe classifications can be escalated to the Master Doctor', 400);
     }
 
@@ -357,7 +360,7 @@ exports.escalateToMasterDoctor = async (req, res) => {
       nextEntry: queueResult.nextEntry,
     }, 'Patient escalated to Master Doctor');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Pap smear escalate error:', err);
     return error(res, err.message || 'Failed to escalate patient', 500);
   }

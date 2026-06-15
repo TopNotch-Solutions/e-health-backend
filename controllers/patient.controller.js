@@ -15,6 +15,12 @@ const { emitFrontOfficeRegistration } = require('../services/notificationService
 const billingChargeService = require('../services/billingChargeService');
 const { assertCanEditPatientToday } = require('../services/frontOfficeService');
 const {
+  assertUniquePatientIdentifiers,
+  validateNationalIdForRegistration,
+  validatePhoneForRegistration,
+  findByNationalId,
+} = require('../services/patientDuplicateService');
+const {
   resolveFrontOfficeRouting,
   buildIntakeNotes,
   emitQueueEvents,
@@ -33,6 +39,7 @@ exports.register = async (req, res) => {
     } = req.body;
 
     if (!first_name || !last_name || !sex) {
+      if (!t.finished) await t.rollback();
       return error(res, 'First name, last name, and sex are required', 400);
     }
 
@@ -52,6 +59,17 @@ exports.register = async (req, res) => {
 
     const tempId = routing.immediateTriage ? generateEmergencyId() : null;
 
+    let normalizedIdNumber = null;
+    let normalizedPhone = null;
+    if (!routing.immediateTriage) {
+      normalizedIdNumber = validateNationalIdForRegistration(id_number);
+      normalizedPhone = validatePhoneForRegistration(phone);
+      await assertUniquePatientIdentifiers(
+        { id_number: normalizedIdNumber, phone: normalizedPhone },
+        t
+      );
+    }
+
     const patient = await Patient.create({
       id: uuidv4(),
       patient_number: generatePatientNumber(),
@@ -62,8 +80,8 @@ exports.register = async (req, res) => {
       last_name: routing.immediateTriage ? tempId : last_name,
       sex,
       date_of_birth: routing.immediateTriage ? null : (date_of_birth || null),
-      id_number: routing.immediateTriage ? null : (id_number || null),
-      phone: routing.immediateTriage ? null : (phone || null),
+      id_number: routing.immediateTriage ? null : normalizedIdNumber,
+      phone: routing.immediateTriage ? null : normalizedPhone,
       address: routing.immediateTriage ? null : (address || null),
       emergency_contact_name: routing.immediateTriage ? null : (emergency_contact_name || null),
       emergency_contact_phone: routing.immediateTriage ? null : (emergency_contact_phone || null),
@@ -99,32 +117,35 @@ exports.register = async (req, res) => {
 
     await t.commit();
 
-    const io = getIO();
-    const patientPayload = {
-      id: patient.id,
-      first_name: patient.first_name,
-      last_name: patient.last_name,
-      patient_number: patient.patient_number,
-      is_emergency: isEmergency,
-      temp_id: patient.temp_id,
-    };
-    const visitPayload = {
-      id: visit.id,
-      visit_number: visit.visit_number,
-      visit_type: visit.visit_type,
-    };
-    emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
-
-    emitFrontOfficeRegistration({
-      visitId: visit.id,
-      visitType: visit.visit_type,
-      patientId: patient.id,
-      processedBy: req.user.id,
-    });
+    try {
+      const io = getIO();
+      const patientPayload = {
+        id: patient.id,
+        first_name: patient.first_name,
+        last_name: patient.last_name,
+        patient_number: patient.patient_number,
+        is_emergency: isEmergency,
+        temp_id: patient.temp_id,
+      };
+      const visitPayload = {
+        id: visit.id,
+        visit_number: visit.visit_number,
+        visit_type: visit.visit_type,
+      };
+      emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
+      emitFrontOfficeRegistration({
+        visitId: visit.id,
+        visitType: visit.visit_type,
+        patientId: patient.id,
+        processedBy: req.user.id,
+      });
+    } catch (emitErr) {
+      console.error('Register patient emit error:', emitErr.message);
+    }
 
     return created(res, { patient, visit, queueEntry }, `Patient registered and routed to ${routing.routingLabel || routing.department}`);
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Register patient error:', err);
     const status = err.statusCode || (err.message?.includes('already in the') ? 409 : 500);
     return error(res, err.message || 'Failed to register patient', status);
@@ -171,35 +192,38 @@ exports.emergencyRegister = async (req, res) => {
 
     await t.commit();
 
-    const io = getIO();
-    const routing = {
-      department: EMERGENCY_UNIT_DEPARTMENT,
-      immediateTriage: true,
-      isEmergency: true,
-    };
-    const patientPayload = {
-      id: patient.id,
-      temp_id: tempId,
-      patient_number: patient.patient_number,
-      is_emergency: true,
-    };
-    const visitPayload = {
-      id: visit.id,
-      visit_number: visit.visit_number,
-      visit_type: 'emergency',
-    };
-    emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
-
-    emitFrontOfficeRegistration({
-      visitId: visit.id,
-      visitType: 'emergency',
-      patientId: patient.id,
-      processedBy: req.user.id,
-    });
+    try {
+      const io = getIO();
+      const routing = {
+        department: EMERGENCY_UNIT_DEPARTMENT,
+        immediateTriage: true,
+        isEmergency: true,
+      };
+      const patientPayload = {
+        id: patient.id,
+        temp_id: tempId,
+        patient_number: patient.patient_number,
+        is_emergency: true,
+      };
+      const visitPayload = {
+        id: visit.id,
+        visit_number: visit.visit_number,
+        visit_type: 'emergency',
+      };
+      emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
+      emitFrontOfficeRegistration({
+        visitId: visit.id,
+        visitType: 'emergency',
+        patientId: patient.id,
+        processedBy: req.user.id,
+      });
+    } catch (emitErr) {
+      console.error('Emergency register emit error:', emitErr.message);
+    }
 
     return created(res, { patient, visit, queueEntry }, 'Emergency patient routed to Emergency Unit');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Emergency register error:', err);
     return error(res, 'Failed to register emergency patient', 500);
   }
@@ -234,10 +258,23 @@ exports.search = async (req, res) => {
       );
     }
 
-    let where;
+    let rows;
 
     if (idNumber) {
-      where = { id_number: { [Op.like]: `%${idNumber}%` } };
+      const normalized = idNumber.replace(/\D/g, '');
+      if (normalized.length === 11) {
+        const match = await findByNationalId(normalized);
+        rows = match ? [await Patient.findByPk(match.id)] : [];
+      } else {
+        rows = await Patient.findAll({
+          where: { id_number: { [Op.like]: `%${idNumber}%` } },
+          limit: 50,
+          order: [
+            ['last_name', 'ASC'],
+            ['first_name', 'ASC'],
+          ],
+        });
+      }
     } else {
       const parts = name.split(/\s+/).filter(Boolean);
       const conditions = [{ date_of_birth: dateOfBirth }];
@@ -256,17 +293,15 @@ exports.search = async (req, res) => {
         });
       }
 
-      where = { [Op.and]: conditions };
+      rows = await Patient.findAll({
+        where: { [Op.and]: conditions },
+        limit: 50,
+        order: [
+          ['last_name', 'ASC'],
+          ['first_name', 'ASC'],
+        ],
+      });
     }
-
-    const rows = await Patient.findAll({
-      where,
-      limit: 50,
-      order: [
-        ['last_name', 'ASC'],
-        ['first_name', 'ASC'],
-      ],
-    });
 
     const patients = await Promise.all(
       rows.map(async (p) => {
@@ -427,10 +462,27 @@ exports.update = async (req, res) => {
       updates.temp_id = null;
     }
 
+    const nextIdNumber = updates.id_number !== undefined ? updates.id_number : patient.id_number;
+    const nextPhone = updates.phone !== undefined ? updates.phone : patient.phone;
+    if (patient.category !== 'unknown' || updates.category === 'known') {
+      if (updates.id_number !== undefined && updates.id_number) {
+        updates.id_number = validateNationalIdForRegistration(updates.id_number);
+      }
+      if (updates.phone !== undefined && updates.phone) {
+        updates.phone = validatePhoneForRegistration(updates.phone);
+      }
+      await assertUniquePatientIdentifiers({
+        id_number: updates.id_number !== undefined ? updates.id_number : nextIdNumber,
+        phone: updates.phone !== undefined ? updates.phone : nextPhone,
+        excludePatientId: patient.id,
+      });
+    }
+
     await patient.update(updates);
     return success(res, patient, 'Patient updated');
   } catch (err) {
-    return error(res, 'Failed to update patient', 500);
+    const status = err.statusCode || 500;
+    return error(res, err.message || 'Failed to update patient', status);
   }
 };
 
@@ -439,7 +491,10 @@ exports.createVisit = async (req, res) => {
   const t = await sequelize.transaction();
   try {
     const patient = await Patient.findByPk(req.params.id);
-    if (!patient) return error(res, 'Patient not found', 404);
+    if (!patient) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Patient not found', 404);
+    }
 
     await visitService.assertNoActiveVisitForPatient(
       patient.id,
@@ -492,27 +547,30 @@ exports.createVisit = async (req, res) => {
 
     await t.commit();
 
-    const io = getIO();
-    const patientPayload = {
-      id: patient.id,
-      first_name: patient.first_name,
-      last_name: patient.last_name,
-      patient_number: patient.patient_number,
-      is_emergency: routing.isEmergency,
-    };
-    const visitPayload = {
-      id: visit.id,
-      visit_number: visit.visit_number,
-      visit_type: visitType,
-    };
-    emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
-
-    emitFrontOfficeRegistration({
-      visitId: visit.id,
-      visitType,
-      patientId: patient.id,
-      processedBy: req.user.id,
-    });
+    try {
+      const io = getIO();
+      const patientPayload = {
+        id: patient.id,
+        first_name: patient.first_name,
+        last_name: patient.last_name,
+        patient_number: patient.patient_number,
+        is_emergency: routing.isEmergency,
+      };
+      const visitPayload = {
+        id: visit.id,
+        visit_number: visit.visit_number,
+        visit_type: visitType,
+      };
+      emitQueueEvents(io, routing, { queueEntry, patient: patientPayload, visit: visitPayload });
+      emitFrontOfficeRegistration({
+        visitId: visit.id,
+        visitType,
+        patientId: patient.id,
+        processedBy: req.user.id,
+      });
+    } catch (emitErr) {
+      console.error('Create visit emit error:', emitErr.message);
+    }
 
     return created(
       res,
@@ -520,7 +578,7 @@ exports.createVisit = async (req, res) => {
       `Visit created — patient routed to ${routing.routingLabel || routing.department}`
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     const status = err.statusCode || (err.message?.includes('already in the') ? 409 : 500);
     return error(res, err.message || 'Failed to create visit', status);
   }

@@ -9,6 +9,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const { emitNurseActivity } = require('../services/notificationService');
 const {
@@ -148,7 +149,7 @@ exports.saveAssessment = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -159,7 +160,7 @@ exports.saveAssessment = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -170,7 +171,7 @@ exports.saveAssessment = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
@@ -178,7 +179,7 @@ exports.saveAssessment = async (req, res) => {
     const withUser = await findAssessmentForVisit(visit_id);
     return success(res, { assessment: serializeAssessment(withUser) }, 'Assessment recorded');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Social worker save assessment error:', err);
     return error(res, err.message || 'Failed to save assessment', 500);
   }
@@ -189,7 +190,7 @@ exports.completeSession = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -200,7 +201,7 @@ exports.completeSession = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -211,30 +212,32 @@ exports.completeSession = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
-    const { assessment, visit } = saved;
+    const { assessment } = saved;
     if (assessment.severity === 'severe') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Severe cases must be escalated to the Booking Room', 400);
     }
 
     const completedAt = new Date();
     await assessment.update({ session_completed_at: completedAt }, { transaction: t });
-    await visit.update({
-      status: 'completed',
-      completed_at: completedAt,
-      current_department: null,
-      current_queue_position: null,
-    }, { transaction: t });
 
     await queueService.completeEntry(queue_entry_id, {
       nextDepartment: null,
       pushed_by: req.user.id,
       notes: 'Social work session complete — routine',
     }, t);
+
+    await clinicBillingService.applyVisitEndState({
+      visitId: visit_id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+      notes: 'Social work session complete',
+    });
 
     await t.commit();
 
@@ -258,7 +261,7 @@ exports.completeSession = async (req, res) => {
 
     return success(res, { assessment: serializeAssessment(assessment) }, 'Social work session finalized');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Social worker complete session error:', err);
     return error(res, err.message || 'Failed to finalize session', 500);
   }
@@ -269,7 +272,7 @@ exports.escalateToBookingRoom = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -280,7 +283,7 @@ exports.escalateToBookingRoom = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -291,13 +294,13 @@ exports.escalateToBookingRoom = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
     const { assessment } = saved;
     if (assessment.severity !== 'severe') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Only severe classifications can be escalated to the Booking Room', 400);
     }
 
@@ -358,7 +361,7 @@ exports.escalateToBookingRoom = async (req, res) => {
       nextEntry: queueResult.nextEntry,
     }, 'Patient escalated to Booking Room');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Social worker escalate error:', err);
     return error(res, err.message || 'Failed to escalate patient', 500);
   }

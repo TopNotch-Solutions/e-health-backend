@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { User, Role, RefreshToken, AuditLog } = require('../models');
+const { User, Role, RefreshToken, AuditLog, Facility } = require('../models');
 const { success, error } = require('../utils/response');
 
 const generateTokens = (user) => {
@@ -30,7 +30,10 @@ exports.login = async (req, res) => {
 
     const user = await User.findOne({
       where: { email },
-      include: [{ model: Role, as: 'role' }],
+      include: [
+        { model: Role, as: 'role' },
+        { model: Facility, as: 'facility', attributes: ['id', 'name', 'type'] },
+      ],
     });
 
     if (!user) {
@@ -80,6 +83,8 @@ exports.login = async (req, res) => {
         role: user.role.name,
         role_display: user.role.display_name,
         facility_id: user.facility_id,
+        facility_name: user.facility?.name || null,
+        facility_type: user.facility?.type || null,
       },
       ...tokens,
     }, 'Login successful');

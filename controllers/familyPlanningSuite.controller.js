@@ -10,6 +10,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const billingChargeService = require('../services/billingChargeService');
 const { createPrescriptionWithItems } = require('../services/clinicPrescriptionService');
@@ -215,7 +216,7 @@ exports.saveRecord = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -226,7 +227,7 @@ exports.saveRecord = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -237,7 +238,7 @@ exports.saveRecord = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
@@ -245,7 +246,7 @@ exports.saveRecord = async (req, res) => {
     const withUser = await findRecordForVisit(visit_id);
     return success(res, { record: serializeRecord(withUser) }, 'Procedural record saved');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Family planning save record error:', err);
     return error(res, err.message || 'Failed to save record', 500);
   }
@@ -256,7 +257,7 @@ exports.completeSession = async (req, res) => {
   try {
     const { visit_id, queue_entry_id } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
 
@@ -267,7 +268,7 @@ exports.completeSession = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -278,25 +279,27 @@ exports.completeSession = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
-    const { record, visit } = saved;
+    const { record } = saved;
     const completedAt = new Date();
     await record.update({ session_completed_at: completedAt }, { transaction: t });
-    await visit.update({
-      status: 'completed',
-      completed_at: completedAt,
-      current_department: null,
-      current_queue_position: null,
-    }, { transaction: t });
 
     await queueService.completeEntry(queue_entry_id, {
       nextDepartment: null,
       pushed_by: req.user.id,
       notes: 'Family planning session complete — no pharmacy routing',
     }, t);
+
+    await clinicBillingService.applyVisitEndState({
+      visitId: visit_id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+      notes: 'Family planning session complete',
+    });
 
     await t.commit();
 
@@ -320,7 +323,7 @@ exports.completeSession = async (req, res) => {
 
     return success(res, { record: serializeRecord(record) }, 'Family planning session completed');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Family planning complete session error:', err);
     return error(res, err.message || 'Failed to complete session', 500);
   }
@@ -331,11 +334,11 @@ exports.routeToPharmacy = async (req, res) => {
   try {
     const { visit_id, queue_entry_id, items } = req.body;
     if (!visit_id || !queue_entry_id) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'visit_id and queue_entry_id are required', 400);
     }
     if (!items?.length) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Add at least one medication to route to pharmacy', 400);
     }
 
@@ -346,7 +349,7 @@ exports.routeToPharmacy = async (req, res) => {
       t
     );
     if (entryCheck.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, entryCheck.error, entryCheck.status);
     }
 
@@ -357,7 +360,7 @@ exports.routeToPharmacy = async (req, res) => {
       transaction: t,
     });
     if (saved.error) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, saved.error, saved.status);
     }
 
@@ -448,7 +451,7 @@ exports.routeToPharmacy = async (req, res) => {
       nextEntry: queueResult.nextEntry,
     }, 'Prescription sent to pharmacy');
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Family planning pharmacy route error:', err);
     return error(res, err.message || 'Failed to route to pharmacy', 500);
   }

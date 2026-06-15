@@ -1,14 +1,34 @@
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
-const { RevenueShift, Bill, Visit, Patient, User } = require('../models');
+const { RevenueShift, Bill, Visit, Patient, User, Facility } = require('../models');
 const { getShiftWindow } = require('../constants/billingShiftSchedule');
+const { isClinicFacility } = require('../config/clinicRoles');
 
 function money(n) {
   return Math.round((parseFloat(n) || 0) * 100) / 100;
 }
 
-function shiftLabel(slot) {
+function shiftLabel(slot, facilityType) {
+  if (facilityType === 'clinic') return 'Clinic shift (08:00 – 17:00)';
   return slot === 'night' ? 'Night shift (20:00 – 08:00)' : 'Day shift (08:00 – 20:00)';
+}
+
+async function resolveFacilityType(facilityId) {
+  if (!facilityId) return null;
+  const facility = await Facility.findByPk(facilityId, { attributes: ['type'] });
+  return facility?.type || null;
+}
+
+function clinicShiftIsActive(window, now = new Date()) {
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  const afterStart =
+    hour > window.shift_start.getHours()
+    || (hour === window.shift_start.getHours() && minute >= window.shift_start.getMinutes());
+  const beforeEnd =
+    hour < window.shift_end.getHours()
+    || (hour === window.shift_end.getHours() && minute < window.shift_end.getMinutes());
+  return afterStart && beforeEnd;
 }
 
 /** Per-clerk shift verification UI flags. */
@@ -71,7 +91,7 @@ function formatShift(row, totals = null) {
   return {
     ...plain,
     ...vMeta,
-    shift_label: plain.shift_label || shiftLabel(plain.shift_slot),
+    shift_label: plain.shift_label || shiftLabel(plain.shift_slot, plain.facility_type),
     expected_cash: expectedCash,
     expected_eft: expectedEft,
     expected_total: expectedTotal,
@@ -202,7 +222,10 @@ async function ensureCurrentClerkShift(facilityId, clerkId) {
 
   await closeEndedShifts(facilityId);
 
-  const window = getShiftWindow(new Date());
+  const facilityType = await resolveFacilityType(facilityId);
+  const window = getShiftWindow(new Date(), {
+    facilityType: facilityType === 'clinic' ? 'clinic' : undefined,
+  });
 
   let shift = await RevenueShift.findOne({
     where: {
@@ -236,11 +259,22 @@ async function ensureCurrentClerkShift(facilityId, clerkId) {
   const clerkTotals = await sumPaymentsForShift(shift, clerkId);
   const facilityTotals = await sumPaymentsForShift(shift, null);
 
+  const now = new Date();
+  const isActive =
+    facilityType === 'clinic'
+      ? clinicShiftIsActive(window, now)
+      : now < new Date(shift.shift_end);
+
   return {
     shift,
     window,
     shift_label: window.label,
-    is_active: new Date() < new Date(shift.shift_end),
+    facility_type: facilityType,
+    is_active: isActive,
+    outside_hours_message:
+      facilityType === 'clinic' && !isActive
+        ? 'Billing clerk shift runs 08:00–17:00 daily. Collections are only recorded during this window.'
+        : null,
     expectedCash: clerkTotals.expectedCash,
     expectedEft: clerkTotals.expectedEft,
     expectedTotal: clerkTotals.expectedTotal,
@@ -255,6 +289,13 @@ async function ensureCurrentClerkShift(facilityId, clerkId) {
 
 async function requireCurrentShift(facilityId, clerkId) {
   const ctx = await ensureCurrentClerkShift(facilityId, clerkId);
+  if (!ctx.is_active) {
+    const err = new Error(
+      ctx.outside_hours_message || 'Billing clerk shift is not active — collections cannot be recorded now'
+    );
+    err.statusCode = 403;
+    throw err;
+  }
   return ctx.shift;
 }
 
@@ -285,11 +326,16 @@ async function getClerkShiftSummary(facilityId, clerkId) {
   };
 }
 
-async function reconcileShift(shiftId, officerId, { verified_cash, notes }) {
+async function reconcileShift(shiftId, officerId, { verified_cash, notes, facilityId } = {}) {
   const shift = await RevenueShift.findByPk(shiftId);
   if (!shift) {
     const err = new Error('Shift not found');
     err.statusCode = 404;
+    throw err;
+  }
+  if (facilityId && shift.facility_id !== facilityId) {
+    const err = new Error('This shift belongs to another facility');
+    err.statusCode = 403;
     throw err;
   }
   const ended = shift.shift_end && new Date(shift.shift_end) <= new Date();
@@ -496,7 +542,12 @@ async function getDashboard(facilityId) {
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
 
   const shiftWhere = facilityId ? { facility_id: facilityId } : {};
-  const current = facilityId ? getShiftWindow(new Date()) : null;
+  const facilityType = await resolveFacilityType(facilityId);
+  const current = facilityId
+    ? getShiftWindow(new Date(), {
+        facilityType: facilityType === 'clinic' ? 'clinic' : facilityType,
+      })
+    : null;
 
   const [todayBills, weekBills, monthBills, openShifts, pendingReconciliation, discrepancies] =
     await Promise.all([

@@ -122,7 +122,7 @@ exports.submitResultsAndReturn = async (req, res) => {
     const { findings, impression, report, imaging_notes } = req.body;
 
     if (!report?.trim() && !findings?.trim()) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Diagnostic report or findings are required', 400);
     }
 
@@ -131,11 +131,11 @@ exports.submitResultsAndReturn = async (req, res) => {
       transaction: t,
     });
     if (!request) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Sonar request not found', 404);
     }
     if (request.status === 'completed') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Results already submitted', 400);
     }
 
@@ -263,7 +263,7 @@ exports.submitResultsAndReturn = async (req, res) => {
       'Diagnostic report submitted — patient returned to doctor queue'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Submit sonar results error:', err);
     return error(res, err.message || 'Failed to submit results', 500);
   }

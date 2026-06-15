@@ -99,7 +99,7 @@ exports.submitResultsAndReturn = async (req, res) => {
     const { test_results, lab_notes, summary } = req.body;
 
     if (!test_results || !Array.isArray(test_results) || test_results.length === 0) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'test_results array is required', 400);
     }
 
@@ -108,11 +108,11 @@ exports.submitResultsAndReturn = async (req, res) => {
       transaction: t,
     });
     if (!request) {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Lab request not found', 404);
     }
     if (request.status === 'completed') {
-      await t.rollback();
+      if (!t.finished) await t.rollback();
       return error(res, 'Results already submitted', 400);
     }
 
@@ -234,7 +234,7 @@ exports.submitResultsAndReturn = async (req, res) => {
       'Results submitted — patient returned to doctor queue'
     );
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('Submit lab results error:', err);
     return error(res, err.message || 'Failed to submit results', 500);
   }
