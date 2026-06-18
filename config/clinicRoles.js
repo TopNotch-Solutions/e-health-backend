@@ -1,9 +1,12 @@
 'use strict';
 
 const { ROLES } = require('./roles');
+const { MATERNITY_ROLE_LABELS } = require('./maternityConfig');
 
-/** Default temporary password for new clinic employees. */
+/** Default temporary password for all new employees (clinic and hospital). */
 const CLINIC_DEFAULT_PASSWORD = 'Demo123!';
+/** @deprecated alias — same as CLINIC_DEFAULT_PASSWORD */
+const DEFAULT_DEMO_PASSWORD = CLINIC_DEFAULT_PASSWORD;
 
 /** Shared across state hospitals and clinics. */
 const SHARED_ROLE_SLUGS = [ROLES.FRONT_OFFICE];
@@ -31,6 +34,12 @@ const HOSPITAL_ROLE_SLUGS = [
   ROLES.MORTUARY_STAFF,
   ROLES.SOCIAL_WORKER,
   ROLES.DATA_ANALYST,
+  ROLES.MATERNITY_FRONT_OFFICER,
+  ROLES.MATERNITY_ANC_STAFF,
+  ROLES.MATERNITY_ANW_STAFF,
+  ROLES.MATERNITY_PNW_STAFF,
+  ROLES.MATERNITY_ICU_STAFF,
+  ROLES.MATERNITY_NICU_STAFF,
 ];
 
 /** Clinic-only roles (plus shared front_office). */
@@ -90,6 +99,32 @@ const AUTHORIZED_CLINIC_ROLES = {
   [ROLES.REVENUE_OFFICER]: 'Revenue Officer',
 };
 
+/** Hospital / health center role display labels (includes maternity). */
+const HOSPITAL_ROLE_LABELS = {
+  [ROLES.FRONT_OFFICE_SUPERVISOR]: 'Front Office Supervisor',
+  [ROLES.NURSE]: 'Nurse',
+  [ROLES.NURSE_SUPERVISOR]: 'Nurse Supervisor',
+  [ROLES.DOCTOR]: 'Doctor',
+  [ROLES.DOCTOR_SUPERVISOR]: 'Doctor Supervisor',
+  [ROLES.PHARMACIST]: 'Pharmacist',
+  [ROLES.PHARMACY_SUPERVISOR]: 'Pharmacy Supervisor',
+  [ROLES.LAB_TECHNICIAN]: 'Lab Technician',
+  [ROLES.LABORATORY_SUPERVISOR]: 'Laboratory Supervisor',
+  [ROLES.RADIOLOGIST]: 'Radiologist',
+  [ROLES.RADIOLOGIST_SUPERVISOR]: 'Radiologist Supervisor',
+  [ROLES.WARD_SUPERVISOR]: 'Ward Supervisor',
+  [ROLES.WARD_STAFF]: 'Ward Staff',
+  [ROLES.PORTER]: 'Porter',
+  [ROLES.KITCHEN_STAFF]: 'Kitchen Staff',
+  [ROLES.KITCHEN_MANAGER]: 'Kitchen Manager',
+  [ROLES.BILLING_CLERK]: 'Billing Clerk',
+  [ROLES.REVENUE_OFFICER]: 'Revenue Officer',
+  [ROLES.MORTUARY_STAFF]: 'Mortuary Staff',
+  [ROLES.SOCIAL_WORKER]: 'Social Worker',
+  [ROLES.DATA_ANALYST]: 'Data Analyst',
+  ...MATERNITY_ROLE_LABELS,
+};
+
 function isAuthorizedClinicRole(roleName) {
   return CLINIC_ROLE_SLUGS.includes(roleName);
 }
@@ -123,9 +158,11 @@ function isRoleAllowedAtFacility(roleName, facility) {
 
 module.exports = {
   CLINIC_DEFAULT_PASSWORD,
+  DEFAULT_DEMO_PASSWORD,
   SHARED_ROLE_SLUGS,
   HOSPITAL_ROLE_SLUGS,
   HOSPITAL_ASSIGNABLE_ROLE_SLUGS,
+  HOSPITAL_ROLE_LABELS,
   AUTHORIZED_CLINIC_ROLES,
   CLINIC_ROLE_SLUGS,
   CLINIC_ONLY_ROLE_SLUGS,

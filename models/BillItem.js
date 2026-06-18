@@ -13,6 +13,10 @@ module.exports = (sequelize, DataTypes) => {
         'ward',
         'nursing',
         'clinic_visit',
+        'maternity_front_office',
+        'maternity_anw_daily',
+        'maternity_pnw_daily',
+        'maternity_icu_daily',
         'other'
       ),
       allowNull: false,

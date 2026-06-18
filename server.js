@@ -64,6 +64,7 @@ app.use('/api/v1/hiv-art', require('./routes/hivArt.routes'));
 app.use('/api/v1/emergency-unit', require('./routes/emergencyUnit.routes'));
 app.use('/api/v1/booking-room', require('./routes/bookingRoom.routes'));
 app.use('/api/v1/dermatologist', require('./routes/dermatologist.routes'));
+app.use('/api/v1/maternity', require('./routes/maternity.routes'));
 app.use('/api/v1/pap-smear-suite', require('./routes/papSmearSuite.routes'));
 app.use('/api/v1/social-worker-suite', require('./routes/socialWorkerSuite.routes'));
 app.use('/api/v1/family-planning-suite', require('./routes/familyPlanningSuite.routes'));
@@ -100,9 +101,17 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
+const { ensureRolesSynced } = require('./services/roleSyncService');
+
 sequelize.authenticate()
   .then(() => {
     console.log('Database connected successfully');
+    return ensureRolesSynced();
+  })
+  .then(() => {
+    console.log('Roles synced from config');
+  })
+  .then(() => {
     // Schema changes belong in migrations (`npm run db:migrate`), not sync+alter.
     // alter:true can add duplicate indexes on every restart and hit MySQL's 64-index limit.
     const runAlterSync = process.env.SEQUELIZE_SYNC_ALTER === '1';

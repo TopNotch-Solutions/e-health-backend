@@ -109,7 +109,7 @@ module.exports = {
       throw new Error('seed-initial-data: system_admin role not found after inserting roles');
     }
 
-    const passwordHash = await bcrypt.hash('admin123', 10);
+    const passwordHash = await bcrypt.hash('Demo123!', 10);
 
     await queryInterface.bulkInsert('users', [{
       id: uuidv4(),

@@ -15,7 +15,13 @@ const { getIO } = require('../socket');
 const { emitDoctorActivity } = require('../services/notificationService');
 const dietPrescriptionService = require('../services/dietPrescriptionService');
 const billingChargeService = require('../services/billingChargeService');
+const { finalizeOutpatientDischarge } = require('../services/visitDischargeService');
 const { validateDiagnosis, CLINIC_DOCTOR_DEPARTMENT } = require('../config/clinicDoctorRouting');
+const {
+  resolveDischargeDiagnosis,
+  buildRefusalDischargeNotes,
+  refusalDischargeActionsTaken,
+} = require('../config/dischargeDocumentation');
 
 const CONSULTATION_QUEUE_DEPARTMENTS = ['doctor', CLINIC_DOCTOR_DEPARTMENT];
 
@@ -861,84 +867,37 @@ exports.admitPatient = async (req, res) => {
 exports.dischargePatient = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const { id } = req.params; // visit_id
-    const { discharge_notes } = req.body;
+    const { id } = req.params;
+    const { discharge_notes, discharge_reason } = req.body;
+    const dischargeNotes = (discharge_reason || discharge_notes || '').trim() || null;
 
-    const visit = await Visit.findByPk(id, {
-      include: [
-        { association: 'patient' },
-        { association: 'admission', include: [{ model: Bed, as: 'bed' }] },
-      ],
+    const result = await finalizeOutpatientDischarge({
+      visitId: id,
+      dischargeNotes,
+      userId: req.user.id,
+      facilityId: req.user.facility_id,
       transaction: t,
     });
 
-    if (!visit) return error(res, 'Visit not found', 404);
-
-    if (visit.patient.payment_type === 'private') {
-      await billingChargeService.finalizeBillForDischarge(id, req.user.facility_id, t);
-      const bill = await Bill.findOne({ where: { visit_id: id }, transaction: t });
-      const totalDue = bill ? billingChargeService.money(bill.total_amount) : 0;
-
-      if (bill && bill.status !== 'paid' && bill.status !== 'waived' && totalDue > 0) {
-        const queueEntry = await queueService.pushToQueue({
-          visit_id: id,
-          department: 'billing',
-          priority: 'normal',
-          pushed_by: req.user.id,
-          notes: 'Private patient — settlement required before discharge',
-        }, t);
-
-        await visit.update({ current_department: 'billing' }, { transaction: t });
-        await t.commit();
-
-        notificationService.emitBillingCharge({
-          facility_id: req.user.facility_id,
-          visit_id: id,
-          patient: visit.patient,
-          queueEntry,
-          bill_id: bill.id,
-          total_amount: totalDue,
-        });
-        return success(
-          res,
-          { queueEntry, bill, total_amount: totalDue },
-          'Patient sent to billing — payment required (cash + EFT)'
-        );
-      }
-    }
-
-    // Discharge from admission if admitted
-    if (visit.admission) {
-      await visit.admission.update({
-        discharged_at: new Date(),
-        discharged_by: req.user.id,
-        discharge_notes: discharge_notes || null,
-        status: 'discharged',
-      }, { transaction: t });
-
-      // Free up bed
-      if (visit.admission.bed) {
-        await visit.admission.bed.update({ status: 'available' }, { transaction: t });
-        notificationService.emitWardUpdate({
-          type: 'discharge',
-          bed_id: visit.admission.bed_id,
-          ward_id: visit.admission.bed.ward_id,
-        });
-      }
-    }
-
-    // Update visit status
-    await visit.update({
-      status: 'discharged',
-      completed_at: new Date(),
-      current_department: null,
-    }, { transaction: t });
-
     await t.commit();
+
+    if (result.routedToBilling) {
+      return success(
+        res,
+        {
+          queueEntry: result.queueEntry,
+          bill: result.bill,
+          total_amount: result.total_amount,
+        },
+        'Patient sent to billing — payment required (cash + EFT)'
+      );
+    }
+
     return success(res, { visit_id: id, status: 'discharged' }, 'Patient discharged');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('Discharge error:', err);
+    if (err.statusCode === 404) return error(res, 'Visit not found', 404);
     return error(res, 'Failed to discharge patient', 500);
   }
 };
@@ -1036,7 +995,7 @@ async function upsertClinicConsultation({
   });
 
   const payload = {
-    diagnosis: diagnosis.trim(),
+    diagnosis: (diagnosis && String(diagnosis).trim()) || null,
     notes: notes || null,
     actions_taken: actions_taken || null,
   };
@@ -1468,5 +1427,99 @@ exports.clinicTransferBookingRoom = async (req, res) => {
     const message = err.message || 'Failed to transfer to booking room';
     const status = message.includes('already in the') ? 409 : 500;
     return error(res, message, status);
+  }
+};
+
+// Clinic master doctor: discharge patient and complete consultation
+exports.clinicDischargePatient = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { visit_id, queue_entry_id, diagnosis, discharge_reason, notes } = req.body;
+    const reason = (discharge_reason || '').trim();
+
+    if (!visit_id || !queue_entry_id) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'visit_id and queue_entry_id are required', 400);
+    }
+    if (!reason) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'discharge_reason is required', 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, { transaction: t });
+    if (!visit) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const consultation = await upsertClinicConsultation({
+      visit_id,
+      doctor_id: req.user.id,
+      diagnosis: resolveDischargeDiagnosis(diagnosis),
+      notes: buildRefusalDischargeNotes(reason, notes),
+      actions_taken: refusalDischargeActionsTaken(reason, { clinic_disposition: 'discharge' }),
+      transaction: t,
+    });
+
+    const doctorEntry = await resolveClinicDoctorQueueEntry({ visit_id, queue_entry_id, transaction: t });
+    if (doctorEntry) {
+      await queueService.completeEntry(
+        doctorEntry.id,
+        { pushed_by: req.user.id, notes: `Patient declined care: ${reason}` },
+        t
+      );
+    }
+
+    const dischargeResult = await finalizeOutpatientDischarge({
+      visitId: visit_id,
+      dischargeNotes: reason,
+      userId: req.user.id,
+      facilityId: req.user.facility_id,
+      transaction: t,
+    });
+
+    await t.commit();
+
+    try {
+      const io = getIO();
+      if (doctorEntry) {
+        io.to(`room:${CLINIC_DOCTOR_DEPARTMENT}`).emit('queue:patient_moved', {
+          entryId: doctorEntry.id,
+          status: 'completed',
+          department: CLINIC_DOCTOR_DEPARTMENT,
+        });
+      }
+      emitDoctorActivity({
+        visitId: visit_id,
+        consultationId: consultation.id,
+        doctorId: req.user.id,
+        action: 'clinic_discharge',
+      });
+    } catch (emitErr) {
+      console.error('Clinic discharge socket emit error:', emitErr.message);
+    }
+
+    if (dischargeResult.routedToBilling) {
+      return success(
+        res,
+        {
+          consultation,
+          queueEntry: dischargeResult.queueEntry,
+          bill: dischargeResult.bill,
+          total_amount: dischargeResult.total_amount,
+        },
+        'Patient sent to billing — payment required before discharge'
+      );
+    }
+
+    return created(
+      res,
+      { consultation, status: 'discharged' },
+      'Patient declined care — consultation ended and documented'
+    );
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    console.error('Clinic discharge error:', err);
+    return error(res, err.message || 'Failed to discharge patient', 500);
   }
 };

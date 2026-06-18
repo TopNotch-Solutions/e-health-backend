@@ -5,6 +5,11 @@
 
 const EMERGENCY_UNIT_DEPARTMENT = 'emergency_unit';
 
+const {
+  MATERNITY_DEPARTMENTS,
+  DEPARTMENT_LABELS: MATERNITY_DEPT_LABELS,
+} = require('./maternityConfig');
+
 const FRONT_OFFICE_ROUTING = [
   { value: 'parameter_nurse', label: 'Parameter Nurse' },
   { value: 'anc_nurse', label: 'ANC Nurse' },
@@ -41,6 +46,7 @@ const DEPARTMENT_LABELS = {
   family_planning: 'Family Planning',
   booking_room: 'Booking Room',
   dermatologist: 'Dermatologist',
+  ...MATERNITY_DEPT_LABELS,
 };
 
 const ALL_QUEUE_DEPARTMENTS = [
@@ -59,6 +65,7 @@ const ALL_QUEUE_DEPARTMENTS = [
   'emergency_unit_doctor',
   'booking_room',
   'dermatologist',
+  ...Object.values(MATERNITY_DEPARTMENTS),
   ...FRONT_OFFICE_ROUTING.map((r) => r.value),
 ];
 

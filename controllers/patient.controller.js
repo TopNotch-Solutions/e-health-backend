@@ -303,16 +303,15 @@ exports.search = async (req, res) => {
       });
     }
 
+    await visitService.reconcileFacilityStaleVisits(req.user.facility_id);
+
     const patients = await Promise.all(
       rows.map(async (p) => {
         const json = p.toJSON();
-        const activeVisit = await visitService.findActiveVisitForPatient(
+        const { activeVisit, activeQueue } = await visitService.getActiveVisitContext(
           p.id,
           req.user.facility_id
         );
-        const activeQueue = activeVisit
-          ? await visitService.findActiveQueueEntryForPatient(p.id, req.user.facility_id)
-          : null;
         return {
           ...json,
           profile_complete: isProfileComplete(p),
@@ -372,7 +371,16 @@ exports.getById = async (req, res) => {
     });
 
     if (!patient) return error(res, 'Patient not found', 404);
-    return success(res, patient);
+
+    const { activeVisit, activeQueue } = await visitService.getActiveVisitContext(
+      patient.id,
+      req.user.facility_id
+    );
+    const json = patient.toJSON();
+    json.has_active_visit = Boolean(activeVisit);
+    json.active_visit = visitService.serializeActiveVisitSummary(activeVisit, activeQueue);
+
+    return success(res, json);
   } catch (err) {
     return error(res, 'Failed to fetch patient', 500);
   }

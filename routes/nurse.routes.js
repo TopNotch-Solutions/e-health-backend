@@ -33,6 +33,20 @@ router.post(
   nurseController.screeningNursePush
 );
 
+router.post(
+  '/parameter-nurse/discharge',
+  authorize('vitals', 'create'),
+  auditMiddleware('vitals'),
+  nurseController.parameterNurseDischarge
+);
+
+router.post(
+  '/screening-nurse/discharge',
+  authorize('vitals', 'create'),
+  auditMiddleware('vitals'),
+  nurseController.screeningNurseDischarge
+);
+
 router.get(
   '/handover/:visitId',
   authorize('vitals', 'read'),

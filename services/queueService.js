@@ -129,6 +129,9 @@ async function pushToQueue({ visit_id, department, priority = 'normal', pushed_b
  * Get current queue for a department with patient info.
  */
 async function getQueue(department, facilityId) {
+  const visitService = require('./visitService');
+  await visitService.reconcileDepartmentStaleVisits(facilityId, department);
+
   const entries = await QueueEntry.findAll({
     where: {
       department,
@@ -243,6 +246,23 @@ async function completeEntry(entryId, { nextDepartment, nextPriority, notes, pus
       }
     }
 
+    const visitForSync = await Visit.findByPk(entry.visit_id, { transaction: t });
+    if (visitForSync?.status === 'in_progress') {
+      const remainingActive = await QueueEntry.count({
+        where: {
+          visit_id: entry.visit_id,
+          status: { [Op.in]: ACTIVE_QUEUE_STATUSES },
+        },
+        transaction: t,
+      });
+      if (remainingActive === 0 && visitForSync.current_department) {
+        await visitForSync.update(
+          { current_department: null, current_queue_position: null },
+          { transaction: t }
+        );
+      }
+    }
+
     if (!transaction) await t.commit();
     return { completedEntry: entry, nextEntry };
   } catch (err) {
@@ -263,6 +283,12 @@ async function skipEntry(entryId, notes) {
     completed_at: new Date(),
     notes: notes || 'Patient skipped',
   });
+
+  const visit = await Visit.findByPk(entry.visit_id);
+  if (visit?.status === 'in_progress') {
+    const visitService = require('./visitService');
+    await visitService.reconcileStaleQueueVisit(visit);
+  }
 
   return entry;
 }

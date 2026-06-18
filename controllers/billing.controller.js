@@ -184,10 +184,9 @@ async function completeVisitAfterPayment(visitId, userId, transaction) {
 
   const billingEntry = await queueService.findActiveEntryForVisit(visitId, 'billing', transaction);
   if (billingEntry) {
-    await billingEntry.update(
-      { status: 'completed', completed_at: new Date() },
-      { transaction }
-    );
+    await queueService.completeEntry(billingEntry.id, {
+      notes: 'Billing settled — visit closed',
+    }, transaction);
   }
 }
 

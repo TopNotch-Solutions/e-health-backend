@@ -26,6 +26,8 @@ const {
   validateAssessmentFields,
   routingLabel: screeningRoutingLabel,
 } = require('../config/screeningNurseRouting');
+const { finalizeOutpatientDischarge } = require('../services/visitDischargeService');
+const { buildRefusalDischargeNotes } = require('../config/dischargeDocumentation');
 
 const VITAL_FIELDS = [
   'temperature', 'blood_pressure_systolic', 'blood_pressure_diastolic',
@@ -406,6 +408,239 @@ exports.screeningNursePush = async (req, res) => {
     const message = err.message || 'Failed to submit assessment and route patient';
     const status = message.includes('already in the') ? 409 : 500;
     return error(res, message, status);
+  }
+};
+
+async function assertActiveQueueEntry({
+  queueEntry,
+  visit_id,
+  department,
+  userId,
+  res,
+  transaction,
+}) {
+  if (!queueEntry || queueEntry.visit_id !== visit_id) {
+    if (!transaction.finished) await transaction.rollback();
+    error(res, 'Invalid queue entry for this visit', 400);
+    return false;
+  }
+  if (queueEntry.department !== department) {
+    if (!transaction.finished) await transaction.rollback();
+    error(res, `Queue entry is not for the ${department} department`, 400);
+    return false;
+  }
+  if (queueEntry.status !== 'in_progress') {
+    if (!transaction.finished) await transaction.rollback();
+    error(res, 'Patient must be started before submitting', 400);
+    return false;
+  }
+  if (queueEntry.assigned_to !== userId) {
+    if (!transaction.finished) await transaction.rollback();
+    error(res, 'You can only process patients assigned to you', 403);
+    return false;
+  }
+  return true;
+}
+
+// Parameter nurse: discharge patient without further routing
+exports.parameterNurseDischarge = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { visit_id, queue_entry_id, discharge_reason, visit_classification } = req.body;
+    const reason = (discharge_reason || '').trim();
+
+    if (!visit_id || !queue_entry_id) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'visit_id and queue_entry_id are required', 400);
+    }
+    if (!reason) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'discharge_reason is required', 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, { transaction: t });
+    if (!visit) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+    const valid = await assertActiveQueueEntry({
+      queueEntry,
+      visit_id,
+      department: PARAMETER_NURSE_DEPARTMENT,
+      userId: req.user.id,
+      res,
+      transaction: t,
+    });
+    if (!valid) return undefined;
+
+    const vitalAttrs = pickVitalAttributes(req.body);
+    if (visit_classification) {
+      vitalAttrs.visit_classification = visit_classification;
+    }
+    vitalAttrs.notes = buildRefusalDischargeNotes(reason);
+
+    await Vital.create({
+      id: uuidv4(),
+      visit_id,
+      recorded_by: req.user.id,
+      ...vitalAttrs,
+    }, { transaction: t });
+
+    await queueService.completeEntry(
+      queue_entry_id,
+      { pushed_by: req.user.id, notes: `Patient declined care: ${reason}` },
+      t
+    );
+
+    const dischargeResult = await finalizeOutpatientDischarge({
+      visitId: visit_id,
+      dischargeNotes: reason,
+      userId: req.user.id,
+      facilityId: req.user.facility_id,
+      transaction: t,
+    });
+
+    await t.commit();
+
+    try {
+      const io = getIO();
+      await emitQueueRefresh(io, PARAMETER_NURSE_DEPARTMENT, req.user.facility_id);
+      io.to(`room:${PARAMETER_NURSE_DEPARTMENT}`).emit('queue:patient_moved', {
+        entryId: queue_entry_id,
+        status: 'completed',
+        department: PARAMETER_NURSE_DEPARTMENT,
+      });
+      emitNurseActivity({
+        visitId: visit_id,
+        recordedBy: req.user.id,
+        action: 'parameter_nurse_discharge',
+      });
+    } catch (emitErr) {
+      console.error('Parameter nurse discharge socket emit error:', emitErr.message);
+    }
+
+    if (dischargeResult.routedToBilling) {
+      return success(
+        res,
+        {
+          queueEntry: dischargeResult.queueEntry,
+          bill: dischargeResult.bill,
+          total_amount: dischargeResult.total_amount,
+        },
+        'Patient sent to billing — payment required before discharge'
+      );
+    }
+
+    return created(res, { status: 'discharged' }, 'Patient declined care — consultation ended and documented');
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    console.error('Parameter nurse discharge error:', err);
+    return error(res, err.message || 'Failed to discharge patient', 500);
+  }
+};
+
+// Screening nurse: discharge patient without further routing
+exports.screeningNurseDischarge = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const {
+      visit_id,
+      queue_entry_id,
+      discharge_reason,
+      symptoms,
+      reason,
+      diagnosis,
+    } = req.body;
+    const dischargeReason = (discharge_reason || '').trim();
+
+    if (!visit_id || !queue_entry_id) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'visit_id and queue_entry_id are required', 400);
+    }
+    if (!dischargeReason) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'discharge_reason is required', 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, { transaction: t });
+    if (!visit) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const queueEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+    const valid = await assertActiveQueueEntry({
+      queueEntry,
+      visit_id,
+      department: SCREENING_NURSE_DEPARTMENT,
+      userId: req.user.id,
+      res,
+      transaction: t,
+    });
+    if (!valid) return undefined;
+
+    await ScreeningAssessment.create({
+      id: uuidv4(),
+      visit_id,
+      recorded_by: req.user.id,
+      symptoms: symptoms?.trim() || 'Patient declined further screening',
+      reason: reason?.trim() || dischargeReason,
+      diagnosis: diagnosis?.trim() || 'Consultation ended — patient declined care',
+      notes: buildRefusalDischargeNotes(dischargeReason),
+    }, { transaction: t });
+
+    await queueService.completeEntry(
+      queue_entry_id,
+      { pushed_by: req.user.id, notes: `Patient declined care: ${dischargeReason}` },
+      t
+    );
+
+    const dischargeResult = await finalizeOutpatientDischarge({
+      visitId: visit_id,
+      dischargeNotes: dischargeReason,
+      userId: req.user.id,
+      facilityId: req.user.facility_id,
+      transaction: t,
+    });
+
+    await t.commit();
+
+    try {
+      const io = getIO();
+      await emitQueueRefresh(io, SCREENING_NURSE_DEPARTMENT, req.user.facility_id);
+      io.to(`room:${SCREENING_NURSE_DEPARTMENT}`).emit('queue:patient_moved', {
+        entryId: queue_entry_id,
+        status: 'completed',
+        department: SCREENING_NURSE_DEPARTMENT,
+      });
+      emitNurseActivity({
+        visitId: visit_id,
+        recordedBy: req.user.id,
+        action: 'screening_nurse_discharge',
+      });
+    } catch (emitErr) {
+      console.error('Screening nurse discharge socket emit error:', emitErr.message);
+    }
+
+    if (dischargeResult.routedToBilling) {
+      return success(
+        res,
+        {
+          queueEntry: dischargeResult.queueEntry,
+          bill: dischargeResult.bill,
+          total_amount: dischargeResult.total_amount,
+        },
+        'Patient sent to billing — payment required before discharge'
+      );
+    }
+
+    return created(res, { status: 'discharged' }, 'Patient declined care — consultation ended and documented');
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    console.error('Screening nurse discharge error:', err);
+    return error(res, err.message || 'Failed to discharge patient', 500);
   }
 };
 

@@ -39,4 +39,11 @@ router.post(
   emergencyUnitController.doctorPrescribePharmacy
 );
 
+router.post(
+  '/doctor/discharge',
+  authorize('consultation', 'update'),
+  auditMiddleware('consultation'),
+  emergencyUnitController.doctorDischargePatient
+);
+
 module.exports = router;

@@ -17,6 +17,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const { listStateHospitalFacilities } = require('../services/stateHospitalFacilityService');
 const { getIO } = require('../socket');
 const {
   BOOKING_ROOM_DEPARTMENT,
@@ -36,29 +37,9 @@ async function emitQueueRefresh(io, department, facilityId) {
 /** State hospital and health center facilities available for external transfer. */
 exports.getStateHospitalFacilities = async (req, res) => {
   try {
-    const where = {
-      type: { [Op.in]: ['hospital', 'health_center'] },
-    };
-    if (req.user.facility_id) {
-      where.id = { [Op.ne]: req.user.facility_id };
-    }
-
-    const facilities = await Facility.findAll({
-      where,
-      attributes: ['id', 'name', 'type', 'province', 'district', 'address'],
-      order: [['name', 'ASC']],
+    const rows = await listStateHospitalFacilities({
+      excludeFacilityId: req.user.facility_id || null,
     });
-
-    const rows = facilities.map((f) => {
-      const plain = f.toJSON();
-      const location = [plain.district, plain.province].filter(Boolean).join(', ');
-      return {
-        ...plain,
-        location: location || plain.province || null,
-        label: location ? `${plain.name} — ${location}` : plain.name,
-      };
-    });
-
     return success(res, rows);
   } catch (err) {
     console.error('getStateHospitalFacilities error:', err);

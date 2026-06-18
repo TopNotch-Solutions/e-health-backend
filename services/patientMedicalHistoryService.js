@@ -2,6 +2,7 @@
 
 const { Visit, QueueEntry } = require('../models');
 const { routingLabel } = require('../config/clinicQueueDepartments');
+const { departmentLabel, MATERNITY_DEPARTMENTS } = require('../config/maternityConfig');
 
 const VITAL_FIELDS = [
   'temperature',
@@ -39,9 +40,87 @@ function sanitizeVitals(vitals) {
   return pick(vitals, VITAL_FIELDS);
 }
 
+function routingLabelForDepartment(dept) {
+  if (Object.values(MATERNITY_DEPARTMENTS).includes(dept)) {
+    return departmentLabel(dept);
+  }
+  return routingLabel(dept);
+}
+
+function serializeMaternityRecords(records, fields) {
+  return (records || [])
+    .map((row) => pick(row, fields))
+    .filter(Boolean);
+}
+
+function maternityClinicalForDepartment(visit, department) {
+  const v = visit;
+
+  if (department === MATERNITY_DEPARTMENTS.ANC) {
+    const sessions = serializeMaternityRecords(v.maternityAncSessions, [
+      'session_number', 'is_first_visit', 'baseline_history', 'general_physical_exam',
+      'special_investigations', 'delivery_details', 'no_further_session_required',
+      'follow_up_date', 'signed_off_at',
+    ]);
+    return sessions.length ? { maternity_anc_sessions: sessions } : null;
+  }
+
+  if (department === MATERNITY_DEPARTMENTS.ANW) {
+    const records = serializeMaternityRecords(v.maternityAnwRecords, [
+      'record_date', 'is_admission_day', 'admission_reason', 'mode_of_arrival',
+      'vitals', 'abdominal_update', 'active_labour', 'serial_progress', 'signed_off_at',
+    ]);
+    return records.length ? { maternity_anw_daily_records: records } : null;
+  }
+
+  if (department === MATERNITY_DEPARTMENTS.PNW) {
+    const records = serializeMaternityRecords(v.maternityPnwRecords, [
+      'record_date', 'is_post_delivery_day', 'delivery_type', 'post_op_recovery',
+      'vitals', 'uterine_index', 'physiological_output', 'breast_examination', 'signed_off_at',
+    ]);
+    const episode = v.maternityEpisode
+      ? pick(v.maternityEpisode, [
+        'feeding_counselling_done', 'six_week_follow_up_date', 'discharged_at', 'current_ward',
+      ])
+      : null;
+    const out = {};
+    if (records.length) out.maternity_pnw_daily_records = records;
+    if (episode) out.maternity_episode = episode;
+    return Object.keys(out).length ? out : null;
+  }
+
+  if (department === MATERNITY_DEPARTMENTS.ICU) {
+    const records = serializeMaternityRecords(v.maternityIcuRecords, [
+      'record_date', 'extreme_indicators', 'continuous_parameters',
+      'multiple_origin_tracking', 'signed_off_at',
+    ]);
+    return records.length ? { maternity_icu_daily_records: records } : null;
+  }
+
+  if (department === MATERNITY_DEPARTMENTS.NICU) {
+    const records = serializeMaternityRecords(v.maternityNicuRecords, [
+      'date_time_of_birth', 'sex', 'name', 'gestation_weeks',
+      'clinical_status', 'apgar_matrix', 'child_patient_id',
+    ]);
+    return records.length ? { maternity_nicu_records: records } : null;
+  }
+
+  if (department === MATERNITY_DEPARTMENTS.FRONT_OFFICE && v.maternityEpisode) {
+    return pick(v.maternityEpisode, [
+      'current_ward', 'admitted_at', 'discharged_at', 'front_office_visits',
+      'anw_days', 'pnw_days', 'icu_days', 'status',
+    ]);
+  }
+
+  return null;
+}
+
 function clinicalForDepartment(visit, department) {
   const v = visit;
   const dept = department;
+
+  const maternityClinical = maternityClinicalForDepartment(v, dept);
+  if (maternityClinical) return maternityClinical;
 
   if (['parameter_nurse', 'nurse', 'anc_nurse'].includes(dept)) {
     return { vitals: sanitizeVitals(v.vitals) };
@@ -157,7 +236,7 @@ function clinicalForDepartment(visit, department) {
 function serializeStop(entry, visit) {
   return {
     department: entry.department,
-    department_label: routingLabel(entry.department),
+    department_label: routingLabelForDepartment(entry.department),
     status: entry.status,
     priority: entry.priority,
     arrived_at: entry.created_at,
@@ -210,6 +289,12 @@ async function getClinicalMedicalHistory(patientId, facilityId) {
       { association: 'prescriptions', include: [{ association: 'items' }] },
       { association: 'labRequests' },
       { association: 'sonarRequests' },
+      { association: 'maternityEpisode' },
+      { association: 'maternityAncSessions', separate: true, order: [['session_number', 'ASC']] },
+      { association: 'maternityAnwRecords', separate: true, order: [['record_date', 'ASC']] },
+      { association: 'maternityPnwRecords', separate: true, order: [['record_date', 'ASC']] },
+      { association: 'maternityIcuRecords', separate: true, order: [['record_date', 'ASC']] },
+      { association: 'maternityNicuRecords', separate: true, order: [['created_at', 'ASC']] },
     ],
     order: [['created_at', 'DESC']],
   });

@@ -40,6 +40,13 @@ const ROLES = {
   BOOKING_ROOM: 'booking_room',
   ART_NURSE: 'art_nurse',
   DERMATOLOGIST: 'dermatologist',
+  // Maternity hospital roles
+  MATERNITY_FRONT_OFFICER: 'maternity_front_officer',
+  MATERNITY_ANC_STAFF: 'maternity_anc_staff',
+  MATERNITY_ANW_STAFF: 'maternity_anw_staff',
+  MATERNITY_PNW_STAFF: 'maternity_pnw_staff',
+  MATERNITY_ICU_STAFF: 'maternity_icu_staff',
+  MATERNITY_NICU_STAFF: 'maternity_nicu_staff',
 };
 
 const PERMISSIONS = {
@@ -315,5 +322,30 @@ ROLE_PERMISSIONS[ROLES.BOOKING_ROOM] = {
   mortuary: ['create', 'read'],
   queue: ['read', 'update'],
 };
+
+// Maternity hospital staff — nurse-like clinical queue permissions + ward tracking
+const MATERNITY_NURSE_PERMISSIONS = {
+  patient: ['read'],
+  vitals: ['create', 'read', 'update'],
+  ward: ['read'],
+  bed: ['read'],
+  admission: ['read', 'update'],
+  queue: ['read', 'push', 'update'],
+};
+
+ROLE_PERMISSIONS[ROLES.MATERNITY_FRONT_OFFICER] = {
+  patient: ['create', 'read', 'update'],
+  queue: ['create', 'read', 'push', 'update'],
+};
+
+[
+  ROLES.MATERNITY_ANC_STAFF,
+  ROLES.MATERNITY_ANW_STAFF,
+  ROLES.MATERNITY_PNW_STAFF,
+  ROLES.MATERNITY_ICU_STAFF,
+  ROLES.MATERNITY_NICU_STAFF,
+].forEach((role) => {
+  ROLE_PERMISSIONS[role] = MATERNITY_NURSE_PERMISSIONS;
+});
 
 module.exports = { ROLES, PERMISSIONS, ROLE_PERMISSIONS };

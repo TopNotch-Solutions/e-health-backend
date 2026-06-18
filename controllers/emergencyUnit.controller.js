@@ -26,6 +26,12 @@ const {
   EMERGENCY_UNIT_DOCTOR_DEPARTMENT: EU_DOCTOR_DEPT,
   validateDiagnosis,
 } = require('../config/emergencyUnitDoctorRouting');
+const { finalizeOutpatientDischarge } = require('../services/visitDischargeService');
+const {
+  resolveDischargeDiagnosis,
+  buildRefusalDischargeNotes,
+  refusalDischargeActionsTaken,
+} = require('../config/dischargeDocumentation');
 
 async function emitQueueRefresh(io, department, facilityId) {
   const entries = await queueService.getQueue(department, facilityId);
@@ -69,7 +75,7 @@ async function upsertConsultation({ visit_id, user_id, diagnosis, notes, actions
   });
 
   const payload = {
-    diagnosis: diagnosis.trim(),
+    diagnosis: (diagnosis && String(diagnosis).trim()) || null,
     notes: notes || null,
     actions_taken: actions_taken || null,
   };
@@ -568,5 +574,102 @@ exports.doctorPrescribePharmacy = async (req, res) => {
     if (!t.finished) await t.rollback();
     console.error('EU doctor pharmacy error:', err);
     return error(res, err.message || 'Failed to prescribe', 500);
+  }
+};
+
+exports.doctorDischargePatient = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { visit_id, queue_entry_id, diagnosis, discharge_reason, notes } = req.body;
+    const reason = (discharge_reason || '').trim();
+
+    if (!visit_id || !queue_entry_id) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'visit_id and queue_entry_id are required', 400);
+    }
+    if (!reason) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'discharge_reason is required', 400);
+    }
+
+    const visit = await Visit.findByPk(visit_id, { transaction: t });
+    if (!visit) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const consultation = await upsertConsultation({
+      visit_id,
+      user_id: req.user.id,
+      diagnosis: resolveDischargeDiagnosis(diagnosis),
+      notes: buildRefusalDischargeNotes(reason, notes),
+      actions_taken: refusalDischargeActionsTaken(reason, {
+        emergency_unit_doctor: true,
+        disposition: 'discharge',
+      }),
+      transaction: t,
+    });
+
+    const doctorEntry = await resolveQueueEntry({
+      visit_id,
+      queue_entry_id,
+      department: EU_DOCTOR_DEPT,
+      transaction: t,
+    });
+
+    if (doctorEntry) {
+      await queueService.completeEntry(
+        doctorEntry.id,
+        { pushed_by: req.user.id, notes: `Patient declined care: ${reason}` },
+        t
+      );
+    }
+
+    const dischargeResult = await finalizeOutpatientDischarge({
+      visitId: visit_id,
+      dischargeNotes: reason,
+      userId: req.user.id,
+      facilityId: req.user.facility_id,
+      transaction: t,
+    });
+
+    await t.commit();
+
+    const io = getIO();
+    try {
+      await emitQueueRefresh(io, EU_DOCTOR_DEPT, req.user.facility_id);
+      if (doctorEntry) {
+        io.to(`room:${EU_DOCTOR_DEPT}`).emit('queue:patient_moved', {
+          entryId: doctorEntry.id,
+          status: 'completed',
+          department: EU_DOCTOR_DEPT,
+        });
+      }
+    } catch (emitErr) {
+      console.error('EU doctor discharge socket error:', emitErr.message);
+    }
+
+    if (dischargeResult.routedToBilling) {
+      return success(
+        res,
+        {
+          consultation,
+          queueEntry: dischargeResult.queueEntry,
+          bill: dischargeResult.bill,
+          total_amount: dischargeResult.total_amount,
+        },
+        'Patient sent to billing — payment required before discharge'
+      );
+    }
+
+    return created(
+      res,
+      { consultation, status: 'discharged' },
+      'Patient declined care — consultation ended and documented'
+    );
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    console.error('EU doctor discharge error:', err);
+    return error(res, err.message || 'Failed to discharge patient', 500);
   }
 };

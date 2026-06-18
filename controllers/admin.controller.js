@@ -1,7 +1,6 @@
 'use strict';
 
 const { v4: uuidv4 } = require('uuid');
-const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const {
   User, Role, Patient, Visit, QueueEntry, Admission, AuditLog,
@@ -10,20 +9,17 @@ const {
 const { Op } = require('sequelize');
 const { success, created, error, paginated } = require('../utils/response');
 const {
-  CLINIC_DEFAULT_PASSWORD,
+  DEFAULT_DEMO_PASSWORD,
   CLINIC_ROLE_SLUGS,
   isClinicFacility,
   getAllowedRoleSlugsForFacility,
   isRoleAllowedAtFacility,
 } = require('../config/clinicRoles');
 const { resolveNationalAdminFacility, NATIONAL_ADMIN_FACILITY_NAME } = require('../utils/nationalAdmin');
+const { ensureRolesSynced } = require('../services/roleSyncService');
 
 function isSystemAdmin(req) {
   return req.user?.role?.name === 'system_admin';
-}
-
-function generateTempPassword() {
-  return crypto.randomBytes(9).toString('base64url').slice(0, 12);
 }
 
 async function resolveRoleById(roleId) {
@@ -534,12 +530,7 @@ exports.createUser = async (req, res) => {
     if (existing) return error(res, 'Email already in use', 400);
 
     const isClinic = isClinicFacility(facility);
-    let tempPassword;
-    if (isClinic) {
-      tempPassword = CLINIC_DEFAULT_PASSWORD;
-    } else {
-      tempPassword = password || generateTempPassword();
-    }
+    const tempPassword = (password && String(password).trim()) || DEFAULT_DEMO_PASSWORD;
     const password_hash = await bcrypt.hash(tempPassword, 10);
 
     const user = await sequelize.transaction(async (transaction) => {
@@ -579,9 +570,7 @@ exports.createUser = async (req, res) => {
     });
 
     const payload = result.toJSON();
-    if (isClinic || !password) {
-      payload.temporary_password = tempPassword;
-    }
+    payload.temporary_password = tempPassword;
 
     return created(res, payload, isClinic ? 'Clinic employee registered' : 'User created');
   } catch (err) {
@@ -607,7 +596,7 @@ exports.createSystemAdmin = async (req, res) => {
     const existing = await User.findOne({ where: { email: email.trim() } });
     if (existing) return error(res, 'Email already in use', 400);
 
-    const tempPassword = password || generateTempPassword();
+    const tempPassword = (password && String(password).trim()) || DEFAULT_DEMO_PASSWORD;
     const password_hash = await bcrypt.hash(tempPassword, 10);
 
     const user = await sequelize.transaction(async (transaction) => {
@@ -646,9 +635,7 @@ exports.createSystemAdmin = async (req, res) => {
     });
 
     const payload = serializeUserRow(result);
-    if (!password) {
-      payload.temporary_password = tempPassword;
-    }
+    payload.temporary_password = tempPassword;
 
     return created(res, payload, 'System administrator created');
   } catch (err) {
@@ -863,6 +850,8 @@ exports.getEmployeeFacilityHistory = async (req, res) => {
 
 exports.getRoles = async (req, res) => {
   try {
+    await ensureRolesSynced();
+
     const where = {};
     if (isSystemAdmin(req)) {
       where.name = { [Op.notIn]: ['system_admin', 'executive'] };

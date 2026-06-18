@@ -56,5 +56,11 @@ router.post(
   auditMiddleware('consultation'),
   doctorController.clinicTransferEmergencyUnit
 );
+router.post(
+  '/clinic/discharge',
+  authorize('consultation', 'update'),
+  auditMiddleware('consultation'),
+  doctorController.clinicDischargePatient
+);
 
 module.exports = router;
