@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const adminController = require('../controllers/admin.controller');
+const adminPatientRecordsController = require('../controllers/adminPatientRecords.controller');
 const { authenticate } = require('../middleware/auth');
 const { authorize, allowRoles } = require('../middleware/rbac');
 const { auditMiddleware } = require('../middleware/audit');
@@ -26,6 +27,23 @@ router.get('/roles', authorize('user', 'read'), adminController.getRoles);
 
 // Audit logs
 router.get('/audit-logs', authorize('audit_log', 'read'), adminController.getAuditLogs);
+
+// Patient records (system admin — facility-scoped history + XLSX export)
+router.get(
+  '/patients/search',
+  allowRoles('system_admin'),
+  adminPatientRecordsController.searchPatients
+);
+router.get(
+  '/patients/:id/medical-history',
+  allowRoles('system_admin'),
+  adminPatientRecordsController.getMedicalHistory
+);
+router.get(
+  '/patients/:id/medical-history/export',
+  allowRoles('system_admin'),
+  adminPatientRecordsController.exportMedicalHistory
+);
 
 // Social Worker Cases
 router.get('/social-worker-cases', authorize('social_worker_case', 'read'), adminController.getSocialWorkerCases);

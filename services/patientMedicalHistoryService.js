@@ -259,6 +259,8 @@ function serializeVisit(visit, queueEntries) {
     visit_number: row.visit_number,
     visit_type: row.visit_type,
     status: row.status,
+    facility_id: row.facility_id || visit.facility_id || null,
+    facility_name: visit.facility?.name || row.facility?.name || null,
     created_at: row.created_at,
     completed_at: row.completed_at,
     current_department: row.current_department,
@@ -269,12 +271,17 @@ function serializeVisit(visit, queueEntries) {
 
 /**
  * Patient medical history: all visits, queue stops, vitals — no staff identities.
+ * @param {string} patientId
+ * @param {string|null|undefined} facilityId — omit or null for all facilities (system admin)
  */
 async function getClinicalMedicalHistory(patientId, facilityId) {
+  const where = { patient_id: patientId };
+  if (facilityId) where.facility_id = facilityId;
+
   const visits = await Visit.findAll({
-    where: { patient_id: patientId, facility_id: facilityId },
+    where,
     include: [
-      { association: 'vitals' },
+      { association: 'facility', attributes: ['id', 'name'] },
       { association: 'screeningAssessment' },
       { association: 'papSmearScreening' },
       { association: 'socialWorkerAssessment' },
