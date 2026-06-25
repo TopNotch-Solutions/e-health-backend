@@ -49,6 +49,8 @@ exports.register = async (req, res) => {
       routing_destination,
       mode_of_arrival,
       accompanied_by,
+      sex,
+      date_of_birth,
     });
 
     const isEmergency = routing.isEmergency;
@@ -524,6 +526,8 @@ exports.createVisit = async (req, res) => {
       routing_destination,
       mode_of_arrival,
       accompanied_by,
+      sex: patient.sex,
+      date_of_birth: patient.date_of_birth,
     });
 
     const patientUpdates = { category: 'returning' };

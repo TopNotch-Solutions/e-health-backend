@@ -28,6 +28,7 @@ const {
 } = require('../config/screeningNurseRouting');
 const { finalizeOutpatientDischarge } = require('../services/visitDischargeService');
 const { buildRefusalDischargeNotes } = require('../config/dischargeDocumentation');
+const { getClinicRoutingOptionsForFacility } = require('../services/clinicRoutingService');
 
 const VITAL_FIELDS = [
   'temperature', 'blood_pressure_systolic', 'blood_pressure_diastolic',
@@ -49,6 +50,18 @@ function pickVitalAttributes(body) {
 }
 
 // Record vitals for a visit
+exports.getRoutingOptions = async (req, res) => {
+  try {
+    const facilityId = req.user?.facility_id;
+    if (!facilityId) return error(res, 'Facility context required', 400);
+    const options = await getClinicRoutingOptionsForFacility(facilityId);
+    return success(res, options);
+  } catch (err) {
+    console.error('Nurse routing options error:', err);
+    return error(res, 'Failed to load routing options', 500);
+  }
+};
+
 exports.create = async (req, res) => {
   try {
     const { visit_id } = req.body;

@@ -2,6 +2,7 @@
 
 const { ROLES } = require('./roles');
 const { MATERNITY_ROLE_LABELS } = require('./maternityConfig');
+const { ROLE_LABELS: HOSPITAL_OUTPATIENT_ROLE_LABELS } = require('./hospitalOutpatientConfig');
 
 /** Default temporary password for all new employees (clinic and hospital). */
 const CLINIC_DEFAULT_PASSWORD = 'Demo123!';
@@ -26,7 +27,8 @@ const HOSPITAL_ROLE_SLUGS = [
   ROLES.RADIOLOGIST_SUPERVISOR,
   ROLES.WARD_SUPERVISOR,
   ROLES.WARD_STAFF,
-  ROLES.PORTER,
+  ROLES.INTERNAL_PORTER,
+  ROLES.EXTERNAL_PORTER,
   ROLES.KITCHEN_STAFF,
   ROLES.KITCHEN_MANAGER,
   ROLES.BILLING_CLERK,
@@ -40,6 +42,16 @@ const HOSPITAL_ROLE_SLUGS = [
   ROLES.MATERNITY_PNW_STAFF,
   ROLES.MATERNITY_ICU_STAFF,
   ROLES.MATERNITY_NICU_STAFF,
+  ROLES.PEDIATRIC_OUTPATIENT_NURSE,
+  ROLES.ENT_NURSE,
+  ROLES.HOSPITAL_EMERGENCY_NURSE,
+  ROLES.EYE_NURSE,
+  ROLES.ORTHOPEDIC_OUTPATIENT_NURSE,
+  ROLES.ADULT_OUTPATIENT_NURSE,
+  ROLES.PHYSIOTHERAPY_NURSE,
+  ROLES.BIG_ROOM_SPECIALIST_NURSE,
+  ROLES.UROLOGY_NURSE,
+  ROLES.MENTAL_HEALTH_NURSE,
 ];
 
 /** Clinic-only roles (plus shared front_office). */
@@ -114,7 +126,9 @@ const HOSPITAL_ROLE_LABELS = {
   [ROLES.RADIOLOGIST_SUPERVISOR]: 'Radiologist Supervisor',
   [ROLES.WARD_SUPERVISOR]: 'Ward Supervisor',
   [ROLES.WARD_STAFF]: 'Ward Staff',
-  [ROLES.PORTER]: 'Porter',
+  [ROLES.PORTER]: 'Internal Porter',
+  [ROLES.INTERNAL_PORTER]: 'Internal Porter',
+  [ROLES.EXTERNAL_PORTER]: 'External Porter (Ambulance)',
   [ROLES.KITCHEN_STAFF]: 'Kitchen Staff',
   [ROLES.KITCHEN_MANAGER]: 'Kitchen Manager',
   [ROLES.BILLING_CLERK]: 'Billing Clerk',
@@ -123,6 +137,7 @@ const HOSPITAL_ROLE_LABELS = {
   [ROLES.SOCIAL_WORKER]: 'Social Worker',
   [ROLES.DATA_ANALYST]: 'Data Analyst',
   ...MATERNITY_ROLE_LABELS,
+  ...HOSPITAL_OUTPATIENT_ROLE_LABELS,
 };
 
 function isAuthorizedClinicRole(roleName) {

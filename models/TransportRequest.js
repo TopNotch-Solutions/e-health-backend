@@ -2,7 +2,13 @@
 module.exports = (sequelize, DataTypes) => {
   const TransportRequest = sequelize.define('TransportRequest', {
     id: { type: DataTypes.CHAR(36), primaryKey: true },
-    visit_id: { type: DataTypes.CHAR(36), allowNull: false },
+    visit_id: { type: DataTypes.CHAR(36), allowNull: true },
+    transport_scope: { type: DataTypes.ENUM('internal', 'external'), allowNull: false, defaultValue: 'internal' },
+    facility_id: { type: DataTypes.CHAR(36), allowNull: true },
+    origin_facility_name: { type: DataTypes.STRING(200) },
+    origin_address: { type: DataTypes.TEXT },
+    external_patient_name: { type: DataTypes.STRING(200) },
+    external_patient_phone: { type: DataTypes.STRING(50) },
     from_location: { type: DataTypes.STRING(100), allowNull: false },
     to_location: { type: DataTypes.STRING(100), allowNull: false },
     equipment_required: { type: DataTypes.ENUM('wheelchair', 'stretcher', 'bed', 'walking', 'other'), allowNull: false },
@@ -17,6 +23,9 @@ module.exports = (sequelize, DataTypes) => {
     requested_at: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
     started_at: { type: DataTypes.DATE },
     completed_at: { type: DataTypes.DATE },
+    clinic_hospital_transfer_id: { type: DataTypes.CHAR(36) },
+    origin_facility_id: { type: DataTypes.CHAR(36) },
+    destination_department: { type: DataTypes.STRING(80) },
   }, {
     tableName: 'transport_requests',
     timestamps: false,
@@ -24,6 +33,7 @@ module.exports = (sequelize, DataTypes) => {
 
   TransportRequest.associate = (models) => {
     TransportRequest.belongsTo(models.Visit, { foreignKey: 'visit_id', as: 'visit' });
+    TransportRequest.belongsTo(models.Facility, { foreignKey: 'facility_id', as: 'facility' });
     TransportRequest.belongsTo(models.User, { foreignKey: 'assigned_porter', as: 'porter' });
     TransportRequest.belongsTo(models.User, { foreignKey: 'requested_by', as: 'requestedBy' });
   };

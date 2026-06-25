@@ -3,9 +3,48 @@ const {
   isValidRoutingDestination,
   routingLabel,
 } = require('../config/clinicQueueDepartments');
+const {
+  MAX_PEDIATRIC_AGE_EXCLUSIVE,
+  ageFromDateOfBirth,
+} = require('../config/pediatricCorner');
+
+const PAP_SMEAR_DEPARTMENT = 'pap_smear';
+const PEDIATRIC_DEPARTMENT = 'pediatric';
 
 function parseFlag(value) {
   return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function isMaleSex(sex) {
+  const value = String(sex || '').toLowerCase();
+  return value === 'male' || value === 'm';
+}
+
+function assertPapSmearEligibleForPatient(sex, destination) {
+  if (destination === PAP_SMEAR_DEPARTMENT && isMaleSex(sex)) {
+    const err = new Error('Pap Smear routing is not available for male patients');
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+function isPediatricEligible(dateOfBirth) {
+  const age = ageFromDateOfBirth(dateOfBirth);
+  if (age == null) return false;
+  return age < MAX_PEDIATRIC_AGE_EXCLUSIVE;
+}
+
+function assertPediatricEligibleForPatient(dateOfBirth, destination) {
+  if (destination !== PEDIATRIC_DEPARTMENT) return;
+
+  if (!isPediatricEligible(dateOfBirth)) {
+    const age = ageFromDateOfBirth(dateOfBirth);
+    const err = age == null
+      ? new Error('Pediatric routing requires a valid date of birth for patients under 12 years')
+      : new Error(`Pediatric routing is only available for patients under ${MAX_PEDIATRIC_AGE_EXCLUSIVE} years`);
+    err.statusCode = 400;
+    throw err;
+  }
 }
 
 /**
@@ -33,6 +72,9 @@ function resolveFrontOfficeRouting(body = {}) {
     err.statusCode = 400;
     throw err;
   }
+
+  assertPapSmearEligibleForPatient(body.sex, destination);
+  assertPediatricEligibleForPatient(body.date_of_birth, destination);
 
   return {
     department: destination,

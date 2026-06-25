@@ -1,6 +1,14 @@
 const { v4: uuidv4 } = require('uuid');
 const { QueueEntry, Visit, Patient, User, Vital, sequelize } = require('../models');
 const { Op } = require('sequelize');
+const { assertQueueDepartmentActiveAtFacility } = require('./clinicFacilityDepartmentService');
+const { isBookingRoomDepartment } = require('../config/bookingRoomRouting');
+const {
+  expireStaleClinicVisitsAtFacility,
+  assertClinicVisitNotExpired,
+  getVisitExpiryInfo,
+} = require('./clinicVisitExpiryService');
+const { isClinicFacility } = require('../config/clinicRoles');
 
 const ACTIVE_QUEUE_STATUSES = ['waiting', 'in_progress'];
 
@@ -59,8 +67,15 @@ async function findActiveEntryForPatient(patientId, department, facilityId, tran
  * Emergency patients get position 0 (top of queue).
  */
 async function pushToQueue({ visit_id, department, priority = 'normal', pushed_by, notes = null }, transaction = null) {
-  const visit = await Visit.findByPk(visit_id, { transaction });
+  const visit = await Visit.findByPk(visit_id, {
+    include: [{ association: 'facility', attributes: ['id', 'type'] }],
+    transaction,
+  });
   if (!visit) throw new Error('Visit not found');
+
+  await assertClinicVisitNotExpired(visit, { autoExpire: true });
+
+  await assertQueueDepartmentActiveAtFacility(visit.facility_id, department);
 
   const existingForVisit = await findActiveEntryForVisit(visit_id, department, transaction);
   if (existingForVisit) {
@@ -130,6 +145,10 @@ async function pushToQueue({ visit_id, department, priority = 'normal', pushed_b
  */
 async function getQueue(department, facilityId) {
   const visitService = require('./visitService');
+  const facility = await require('../models').Facility.findByPk(facilityId, { attributes: ['id', 'type'] });
+  if (isClinicFacility(facility)) {
+    await expireStaleClinicVisitsAtFacility(facilityId);
+  }
   await visitService.reconcileDepartmentStaleVisits(facilityId, department);
 
   const entries = await QueueEntry.findAll({
@@ -169,6 +188,16 @@ async function getQueue(department, facilityId) {
     ],
   });
 
+  if (isClinicFacility(facility)) {
+    return entries.map((entry) => {
+      const plain = entry.toJSON();
+      if (plain.visit) {
+        plain.visit.clinic_visit_expiry = getVisitExpiryInfo(plain.visit);
+      }
+      return plain;
+    });
+  }
+
   return entries;
 }
 
@@ -189,6 +218,7 @@ async function startEntry(entryId, userId) {
 
   if (entry.status === 'in_progress') {
     if (entry.assigned_to === userId) return entry;
+    if (isBookingRoomDepartment(entry.department)) return entry;
     const nurse = entry.assignedTo;
     const name = nurse
       ? [nurse.first_name, nurse.last_name].filter(Boolean).join(' ').trim()
@@ -199,6 +229,8 @@ async function startEntry(entryId, userId) {
   if (entry.status !== 'waiting') {
     throw new Error('Patient is not available in the queue');
   }
+
+  await assertClinicVisitNotExpired(entry.visit, { autoExpire: true });
 
   await entry.update({
     status: 'in_progress',
@@ -303,7 +335,9 @@ async function releaseEntry(entryId, userId) {
     throw new Error('Patient is not in an active session');
   }
   if (entry.assigned_to !== userId) {
-    throw new Error('You can only release patients assigned to you');
+    if (!isBookingRoomDepartment(entry.department)) {
+      throw new Error('You can only release patients assigned to you');
+    }
   }
 
   await entry.update({

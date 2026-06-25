@@ -8,6 +8,7 @@ const {
   sequelize,
 } = require('../models');
 const { success, created, error } = require('../utils/response');
+const { applyClinicalTransferPlan } = require('../services/clinicHospitalTransferService');
 const queueService = require('../services/queueService');
 const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
@@ -314,6 +315,15 @@ exports.escalateToBookingRoom = async (req, res) => {
 
     await assessment.update({ escalated_to_booking_at: new Date() }, { transaction: t });
 
+    const transferPlan = await applyClinicalTransferPlan({
+      visitId: visit_id,
+      clinicFacilityId: req.user.facility_id,
+      plannedBy: req.user.id,
+      sourceRole: 'social_worker',
+      body: req.body,
+      transaction: t,
+    });
+
     const queueResult = await queueService.completeEntry(queue_entry_id, {
       nextDepartment: BOOKING_ROOM_DEPARTMENT,
       nextPriority:
@@ -359,6 +369,7 @@ exports.escalateToBookingRoom = async (req, res) => {
     return created(res, {
       assessment: serializeAssessment(assessment),
       nextEntry: queueResult.nextEntry,
+      transferPlan,
     }, 'Patient escalated to Booking Room');
   } catch (err) {
     if (!t.finished) await t.rollback();

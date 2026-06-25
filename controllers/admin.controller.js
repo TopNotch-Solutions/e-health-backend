@@ -17,6 +17,22 @@ const {
 } = require('../config/clinicRoles');
 const { resolveNationalAdminFacility, NATIONAL_ADMIN_FACILITY_NAME } = require('../utils/nationalAdmin');
 const { ensureRolesSynced } = require('../services/roleSyncService');
+const {
+  CLINIC_DEPARTMENT_DEFINITIONS,
+  FOUNDATION_CLINIC_DEPARTMENT_KEYS,
+  MINIMAL_CLINIC_TEMPLATE_KEYS,
+  FULL_CLINIC_TEMPLATE_KEYS,
+  isFoundationDepartment,
+  getRequiredDepartment,
+  getCascadeRemovals,
+  resolveTemplateKeys,
+  seedDepartmentsForFacility,
+  getActiveDepartmentKeys,
+  getFacilityDepartmentsSummary,
+  addDepartments,
+  removeDepartments,
+  getDepartmentDetail,
+} = require('../services/clinicFacilityDepartmentService');
 
 function isSystemAdmin(req) {
   return req.user?.role?.name === 'system_admin';
@@ -392,14 +408,22 @@ exports.getFacilities = async (req, res) => {
       staffCounts.map((r) => [r.facility_id, parseInt(r.staff_count, 10) || 0])
     );
 
-    const rows = facilities.map((f) => {
+    const rows = await Promise.all(facilities.map(async (f) => {
       const plain = f.toJSON();
+      let department_count = null;
+      if (plain.type === 'clinic') {
+        const { FacilityDepartment } = require('../models');
+        department_count = await FacilityDepartment.count({
+          where: { facility_id: plain.id, is_active: true },
+        });
+      }
       return {
         ...plain,
         staff_count: countByFacility[plain.id] || 0,
+        department_count,
         location: [plain.district, plain.province].filter(Boolean).join(', ') || plain.province || '—',
       };
-    });
+    }));
 
     return success(res, rows);
   } catch (err) {
@@ -409,13 +433,26 @@ exports.getFacilities = async (req, res) => {
 };
 
 exports.createFacility = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
-    const { name, type, address, province, district, phone } = req.body;
+    const {
+      name,
+      type,
+      address,
+      province,
+      district,
+      phone,
+      clinic_template,
+      departments,
+      template_reason,
+    } = req.body;
     if (!name || !type) {
+      await t.rollback();
       return error(res, 'name and type are required', 400);
     }
     const allowedTypes = ['hospital', 'clinic', 'health_center'];
     if (!allowedTypes.includes(type)) {
+      await t.rollback();
       return error(res, `type must be one of: ${allowedTypes.join(', ')}`, 400);
     }
 
@@ -427,12 +464,156 @@ exports.createFacility = async (req, res) => {
       province: province?.trim() || null,
       district: district?.trim() || null,
       phone: phone?.trim() || null,
-    });
+    }, { transaction: t });
 
-    return created(res, { ...facility.toJSON(), staff_count: 0 }, 'Facility created');
+    let seededDepartments = [];
+    if (type === 'clinic') {
+      const template = clinic_template || 'full';
+      const keys = resolveTemplateKeys(template, departments);
+      if (!keys.length) {
+        await t.rollback();
+        return error(res, 'Select at least one clinic department', 400);
+      }
+      const customDiffersFromFull = template === 'custom'
+        && (keys.length !== FULL_CLINIC_TEMPLATE_KEYS.length
+          || keys.some((k) => !FULL_CLINIC_TEMPLATE_KEYS.includes(k))
+          || FULL_CLINIC_TEMPLATE_KEYS.some((k) => !keys.includes(k)));
+      if (customDiffersFromFull && !template_reason?.trim()) {
+        await t.rollback();
+        return error(res, 'A reason is required when removing optional clinic departments', 400);
+      }
+      seededDepartments = await seedDepartmentsForFacility(facility.id, keys, t);
+      if (template === 'custom' && template_reason?.trim()) {
+        const { FacilityDepartmentChange } = require('../models');
+        for (const key of keys) {
+          await FacilityDepartmentChange.create({
+            id: uuidv4(),
+            facility_id: facility.id,
+            department_key: key,
+            action: 'added',
+            reason: template_reason.trim(),
+            changed_by: req.user.id,
+          }, { transaction: t });
+        }
+      }
+    }
+
+    await t.commit();
+
+    const payload = {
+      ...facility.toJSON(),
+      staff_count: 0,
+      department_count: seededDepartments.length,
+    };
+    return created(res, payload, 'Facility created');
   } catch (err) {
+    if (!t.finished) await t.rollback();
     console.error('createFacility error:', err);
-    return error(res, 'Failed to create facility', 500);
+    return error(res, err.message || 'Failed to create facility', err.statusCode || 500);
+  }
+};
+
+exports.getClinicDepartmentCatalog = async (req, res) => {
+  return success(res, {
+    foundation_template: FOUNDATION_CLINIC_DEPARTMENT_KEYS,
+    minimal_template: MINIMAL_CLINIC_TEMPLATE_KEYS,
+    full_template: FULL_CLINIC_TEMPLATE_KEYS,
+    departments: CLINIC_DEPARTMENT_DEFINITIONS.map((d) => ({
+      key: d.key,
+      label: d.label,
+      is_foundation: isFoundationDepartment(d.key),
+      requires_department: getRequiredDepartment(d.key),
+      removal_cascades_to: getCascadeRemovals(d.key),
+    })),
+  });
+};
+
+exports.getFacilityDepartments = async (req, res) => {
+  try {
+    const summary = await getFacilityDepartmentsSummary(req.params.id);
+    if (!summary) return error(res, 'Facility not found', 404);
+    return success(res, summary);
+  } catch (err) {
+    console.error('getFacilityDepartments error:', err);
+    return error(res, 'Failed to load clinic departments', 500);
+  }
+};
+
+exports.addFacilityDepartment = async (req, res) => {
+  try {
+    const { department_key, department_keys, reason } = req.body || {};
+    const keys = Array.isArray(department_keys) && department_keys.length
+      ? department_keys
+      : department_key
+        ? [department_key]
+        : [];
+    if (!keys.length) {
+      return error(res, 'Select at least one department', 400);
+    }
+    const summary = await addDepartments(
+      req.params.id,
+      keys,
+      reason,
+      req.user.id
+    );
+    const message = keys.length === 1
+      ? 'Department added'
+      : `${keys.length} departments added`;
+    return success(res, summary, message);
+  } catch (err) {
+    console.error('addFacilityDepartment error:', err);
+    return error(res, err.message || 'Failed to add department', err.statusCode || 500);
+  }
+};
+
+exports.removeFacilityDepartment = async (req, res) => {
+  try {
+    const { reason } = req.body || {};
+    const summary = await removeDepartments(
+      req.params.id,
+      [req.params.departmentKey],
+      reason,
+      req.user.id
+    );
+    return success(res, summary, 'Department removed');
+  } catch (err) {
+    console.error('removeFacilityDepartment error:', err);
+    return error(res, err.message || 'Failed to remove department', err.statusCode || 500);
+  }
+};
+
+exports.removeFacilityDepartments = async (req, res) => {
+  try {
+    const { department_keys, reason } = req.body || {};
+    const keys = Array.isArray(department_keys) && department_keys.length
+      ? department_keys
+      : [];
+    if (!keys.length) {
+      return error(res, 'Select at least one department', 400);
+    }
+    const summary = await removeDepartments(
+      req.params.id,
+      keys,
+      reason,
+      req.user.id
+    );
+    const message = keys.length === 1
+      ? 'Department removed'
+      : `${keys.length} departments removed`;
+    return success(res, summary, message);
+  } catch (err) {
+    console.error('removeFacilityDepartments error:', err);
+    return error(res, err.message || 'Failed to remove departments', err.statusCode || 500);
+  }
+};
+
+exports.getFacilityDepartmentDetail = async (req, res) => {
+  try {
+    const detail = await getDepartmentDetail(req.params.id, req.params.departmentKey);
+    return success(res, detail);
+  } catch (err) {
+    console.error('getFacilityDepartmentDetail error:', err);
+    return error(res, err.message || 'Failed to load department detail', err.statusCode || 500);
   }
 };
 
@@ -862,7 +1043,13 @@ exports.getRoles = async (req, res) => {
     if (facilityId) {
       const facility = await Facility.findByPk(facilityId);
       if (!facility) return error(res, 'Facility not found', 404);
-      const allowedSlugs = getAllowedRoleSlugsForFacility(facility);
+      let allowedSlugs = getAllowedRoleSlugsForFacility(facility);
+      if (isClinicFacility(facility)) {
+        const activeDeptKeys = await getActiveDepartmentKeys(facilityId);
+        if (activeDeptKeys.length) {
+          allowedSlugs = allowedSlugs.filter((slug) => activeDeptKeys.includes(slug));
+        }
+      }
       where.name = { [Op.in]: allowedSlugs };
     } else if (context === 'clinic') {
       where.name = { [Op.in]: CLINIC_ROLE_SLUGS };

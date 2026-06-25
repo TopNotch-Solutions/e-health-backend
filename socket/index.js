@@ -60,6 +60,18 @@ function initSocket(server) {
     if (socket.userRole === 'pharmacist' || socket.userRole === 'pharmacy_supervisor') {
       socket.join('room:pharmacy');
     }
+    if (socket.userRole === 'porter' || socket.userRole === 'internal_porter') {
+      socket.join('room:internal_porter');
+      socket.join('room:porter');
+    }
+    if (socket.userRole === 'external_porter') {
+      socket.join('room:external_porter');
+    }
+    const { departmentForRole } = require('../config/hospitalOutpatientConfig');
+    const hospitalDept = departmentForRole(socket.userRole);
+    if (hospitalDept) {
+      socket.join(`room:${hospitalDept}`);
+    }
     socket.join(`user:${socket.userId}`);
     socket.join(`facility:${socket.facilityId}`);
 

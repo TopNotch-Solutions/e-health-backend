@@ -76,6 +76,8 @@ app.use('/api/v1/lab', require('./routes/lab.routes'));
 app.use('/api/v1/sonar', require('./routes/sonar.routes'));
 app.use('/api/v1/wards', require('./routes/ward.routes'));
 app.use('/api/v1/transport', require('./routes/transport.routes'));
+app.use('/api/v1/clinic-hospital-transfer', require('./routes/clinicHospitalTransfer.routes'));
+app.use('/api/v1/hospital-outpatient', require('./routes/hospitalOutpatient.routes'));
 app.use('/api/v1/kitchen', require('./routes/kitchen.routes'));
 app.use('/api/v1/billing', require('./routes/billing.routes'));
 app.use('/api/v1/revenue', require('./routes/revenue.routes'));
@@ -110,6 +112,17 @@ sequelize.authenticate()
   })
   .then(() => {
     console.log('Roles synced from config');
+    const { Facility } = require('./models');
+    const { isHospitalFacility } = require('./config/clinicRoles');
+    const { seedHospitalOutpatientDepartments } = require('./services/clinicHospitalTransferService');
+    return Facility.findAll({ where: { type: ['hospital', 'health_center'] } }).then(async (hospitals) => {
+      for (const hospital of hospitals.filter(isHospitalFacility)) {
+        await seedHospitalOutpatientDepartments(hospital.id);
+      }
+    });
+  })
+  .then(() => {
+    console.log('Hospital outpatient departments seeded');
   })
   .then(() => {
     // Schema changes belong in migrations (`npm run db:migrate`), not sync+alter.
@@ -128,6 +141,8 @@ sequelize.authenticate()
     }
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      const { startClinicVisitExpiryScheduler } = require('./services/clinicVisitExpiryService');
+      startClinicVisitExpiryScheduler();
     });
   })
   .catch((err) => {

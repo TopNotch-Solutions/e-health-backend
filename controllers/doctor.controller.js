@@ -16,6 +16,7 @@ const { emitDoctorActivity } = require('../services/notificationService');
 const dietPrescriptionService = require('../services/dietPrescriptionService');
 const billingChargeService = require('../services/billingChargeService');
 const { finalizeOutpatientDischarge } = require('../services/visitDischargeService');
+const { applyClinicalTransferPlan } = require('../services/clinicHospitalTransferService');
 const { validateDiagnosis, CLINIC_DOCTOR_DEPARTMENT } = require('../config/clinicDoctorRouting');
 const {
   resolveDischargeDiagnosis,
@@ -775,6 +776,8 @@ exports.admitPatient = async (req, res) => {
     const transportReq = await TransportRequest.create({
       id: uuidv4(),
       visit_id,
+      facility_id: visit.facility_id,
+      transport_scope: 'internal',
       from_location: 'Doctor Consultation Room',
       to_location: [
         bed.ward.name,
@@ -807,7 +810,8 @@ exports.admitPatient = async (req, res) => {
     });
     try {
       const io = getIO();
-      io.to('room:porter').emit('transport:queue_refresh', { reason: 'new_request' });
+      const { emitTransportSocketRefresh } = require('../config/porterRoles');
+      emitTransportSocketRefresh(io, 'internal', 'transport:queue_refresh', { reason: 'new_request' });
     } catch (e) {
       /* ignore */
     }
@@ -1354,6 +1358,15 @@ exports.clinicTransferBookingRoom = async (req, res) => {
       transaction: t,
     });
 
+    const transferPlan = await applyClinicalTransferPlan({
+      visitId: visit_id,
+      clinicFacilityId: req.user.facility_id,
+      plannedBy: req.user.id,
+      sourceRole: 'master_doctor',
+      body: req.body,
+      transaction: t,
+    });
+
     const prescriptionResult = await applyClinicPrescriptionIfItems({
       visit_id,
       consultation_id: consultation.id,
@@ -1413,6 +1426,7 @@ exports.clinicTransferBookingRoom = async (req, res) => {
       {
         consultation,
         queueEntry: queueResult.nextEntry,
+        transferPlan,
         prescription: prescriptionResult.prescription,
         queueCompleted: Boolean(queueResult.completedEntry),
         lowStockAlerts: prescriptionResult.lowStockAlerts,
@@ -1425,7 +1439,7 @@ exports.clinicTransferBookingRoom = async (req, res) => {
     if (!t.finished) await t.rollback();
     console.error('Clinic booking room transfer error:', err);
     const message = err.message || 'Failed to transfer to booking room';
-    const status = message.includes('already in the') ? 409 : 500;
+    const status = err.statusCode || (message.includes('already in the') ? 409 : 500);
     return error(res, message, status);
   }
 };

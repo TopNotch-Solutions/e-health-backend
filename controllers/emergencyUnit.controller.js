@@ -11,6 +11,7 @@ const {
 } = require('../models');
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
+const { applyClinicalTransferPlan } = require('../services/clinicHospitalTransferService');
 const { pushPrescriptionToPharmacy } = require('../services/clinicPrescriptionService');
 const { getIO } = require('../socket');
 const {
@@ -425,6 +426,15 @@ exports.doctorTransferBookingRoom = async (req, res) => {
       transaction: t,
     });
 
+    const transferPlan = await applyClinicalTransferPlan({
+      visitId: visit_id,
+      clinicFacilityId: req.user.facility_id,
+      plannedBy: req.user.id,
+      sourceRole: 'emergency_unit_doctor',
+      body: req.body,
+      transaction: t,
+    });
+
     let queueResult = { completedEntry: null, nextEntry: null };
     if (doctorEntry) {
       queueResult = await queueService.completeEntry(
@@ -469,6 +479,7 @@ exports.doctorTransferBookingRoom = async (req, res) => {
     return created(res, {
       consultation,
       queueEntry: queueResult.nextEntry,
+      transferPlan,
       prescription: prescriptionResult.prescription,
     }, prescriptionResult.prescription
       ? 'Assessment saved — prescription to pharmacy, patient sent to Booking Room'

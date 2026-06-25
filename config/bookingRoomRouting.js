@@ -2,6 +2,10 @@ const BOOKING_ROOM_DEPARTMENT = 'booking_room';
 const BOOKING_PATHWAY_DERMATOLOGIST = 'pathway:dermatologist';
 const BOOKING_PATHWAY_SOCIAL_WORKER = 'pathway:social_worker';
 
+function isBookingRoomDepartment(department) {
+  return department === BOOKING_ROOM_DEPARTMENT;
+}
+
 const DERMATOLOGIST_PATHWAY_DISPOSITIONS = [
   { value: 'state_hospital', label: 'Transfer to State Hospital', buttonClass: 'primary' },
 ];
@@ -21,9 +25,8 @@ function dispositionLabel(value) {
   return FINAL_DISPOSITIONS.find((d) => d.value === value)?.label || value;
 }
 
-function validateStateHospital({ destination_facility_id, reason }) {
+function validateStateHospital({ destination_facility_id }) {
   if (!destination_facility_id?.trim()) return 'Select a state hospital facility.';
-  if (!reason?.trim()) return 'Transfer reason is required.';
   return null;
 }
 
@@ -48,6 +51,7 @@ module.exports = {
   BOOKING_ROOM_DEPARTMENT,
   BOOKING_PATHWAY_DERMATOLOGIST,
   BOOKING_PATHWAY_SOCIAL_WORKER,
+  isBookingRoomDepartment,
   FINAL_DISPOSITIONS,
   DERMATOLOGIST_PATHWAY_DISPOSITIONS,
   isDermatologistBookingPathway,

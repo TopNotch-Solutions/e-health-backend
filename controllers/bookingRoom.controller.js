@@ -13,9 +13,11 @@ const {
   Referral,
   MortuaryRecord,
   Facility,
+  ClinicHospitalTransfer,
   sequelize,
 } = require('../models');
 const { success, created, error } = require('../utils/response');
+const { getTransferForVisit } = require('../services/clinicHospitalTransferService');
 const queueService = require('../services/queueService');
 const { listStateHospitalFacilities } = require('../services/stateHospitalFacilityService');
 const { getIO } = require('../socket');
@@ -32,6 +34,41 @@ const {
 async function emitQueueRefresh(io, department, facilityId) {
   const entries = await queueService.getQueue(department, facilityId);
   io.to(`room:${department}`).emit('queue:refresh', { department, entries });
+}
+
+async function resolveReferralReasonFromVisit(visitId, transaction = null) {
+  const transfer = await ClinicHospitalTransfer.findOne({
+    where: { visit_id: visitId },
+    order: [['created_at', 'DESC']],
+    transaction,
+  });
+  if (transfer?.transfer_reason?.trim()) return transfer.transfer_reason.trim();
+
+  const consultation = await Consultation.findOne({
+    where: { visit_id: visitId },
+    order: [['created_at', 'DESC']],
+    transaction,
+  });
+  if (consultation?.diagnosis?.trim()) {
+    const parts = [consultation.diagnosis.trim()];
+    if (consultation.notes?.trim()) parts.push(consultation.notes.trim());
+    return parts.join(' — ');
+  }
+  if (consultation?.notes?.trim()) return consultation.notes.trim();
+
+  const dermatology = await DermatologyAssessment.findOne({
+    where: { visit_id: visitId },
+    transaction,
+  });
+  if (dermatology?.clinical_observations?.trim()) return dermatology.clinical_observations.trim();
+
+  const socialWorker = await SocialWorkerAssessment.findOne({
+    where: { visit_id: visitId, assessment_saved: true },
+    transaction,
+  });
+  if (socialWorker?.clinical_notes?.trim()) return socialWorker.clinical_notes.trim();
+
+  return 'Clinic referral to state hospital';
 }
 
 /** State hospital and health center facilities available for external transfer. */
@@ -91,6 +128,7 @@ exports.getHandover = async (req, res) => {
       ]);
 
     const pathwayRestricted = isDermatologistBookingPathway(bookingEntry?.notes);
+    const transferPlan = await getTransferForVisit(visitId);
 
     return success(res, {
       visit,
@@ -103,6 +141,7 @@ exports.getHandover = async (req, res) => {
       interventions,
       pathwayRestricted,
       allowedDispositions: dispositionsForPathway(pathwayRestricted),
+      transferPlan,
     });
   } catch (err) {
     return error(res, 'Failed to fetch handover', 500);
@@ -150,10 +189,6 @@ exports.completeDisposition = async (req, res) => {
       if (!t.finished) await t.rollback();
       return error(res, 'Patient must be started before disposition', 400);
     }
-    if (queueEntry.assigned_to !== req.user.id) {
-      if (!t.finished) await t.rollback();
-      return error(res, 'You can only process patients assigned to you', 403);
-    }
 
     const pathwayRestricted = isDermatologistBookingPathway(queueEntry.notes);
     if (pathwayRestricted && disposition !== 'state_hospital') {
@@ -164,11 +199,14 @@ exports.completeDisposition = async (req, res) => {
     let mortuaryRecord = null;
 
     if (disposition === 'state_hospital') {
-      const validationError = validateStateHospital({ destination_facility_id, reason });
+      const validationError = validateStateHospital({ destination_facility_id });
       if (validationError) {
         if (!t.finished) await t.rollback();
         return error(res, validationError, 400);
       }
+
+      const referralReason = (reason?.trim())
+        || await resolveReferralReasonFromVisit(visit_id, t);
 
       const targetFacility = await Facility.findByPk(destination_facility_id, { transaction: t });
       if (
@@ -184,7 +222,7 @@ exports.completeDisposition = async (req, res) => {
         visit_id,
         referred_by: req.user.id,
         referral_type: 'external_facility',
-        reason: reason.trim(),
+        reason: referralReason,
         destination: targetFacility.name,
         status: 'pending',
       }, { transaction: t });

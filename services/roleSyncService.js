@@ -3,6 +3,7 @@
 const { ROLES, ROLE_PERMISSIONS } = require('../config/roles');
 const { AUTHORIZED_CLINIC_ROLES, HOSPITAL_ROLE_LABELS } = require('../config/clinicRoles');
 const { MATERNITY_ROLE_LABELS } = require('../config/maternityConfig');
+const { ROLE_LABELS: HOSPITAL_OUTPATIENT_ROLE_LABELS } = require('../config/hospitalOutpatientConfig');
 const { Role, sequelize } = require('../models');
 
 function displayNameForRole(slug) {

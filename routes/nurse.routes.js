@@ -8,6 +8,12 @@ const { auditMiddleware } = require('../middleware/audit');
 router.use(authenticate);
 
 router.get(
+  '/routing-options',
+  authorize('vitals', 'read'),
+  nurseController.getRoutingOptions
+);
+
+router.get(
   '/supervisor-metrics',
   authorize('analytics', 'read'),
   clinicalSupervisorController.getNurseSupervisorMetrics

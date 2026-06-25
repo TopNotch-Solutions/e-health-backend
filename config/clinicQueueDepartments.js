@@ -46,6 +46,16 @@ const DEPARTMENT_LABELS = {
   family_planning: 'Family Planning',
   booking_room: 'Booking Room',
   dermatologist: 'Dermatologist',
+  pediatric_outpatient: 'Pediatric Outpatient',
+  ent_outpatient: 'Ear, Nose and Throat',
+  hospital_emergency_unit: 'Emergency Unit',
+  eye_outpatient: 'Eye',
+  orthopedic_outpatient: 'Orthopedic Outpatient',
+  adult_outpatient: 'Adult Outpatient',
+  physiotherapy_rehabilitation: 'Physiotherapy and Rehabilitation',
+  big_room_specialist: 'Big Room Specialist',
+  urology_outpatient: 'Urology',
+  mental_health_outpatient: 'Mental Health',
   ...MATERNITY_DEPT_LABELS,
 };
 

@@ -9,6 +9,13 @@ router.use(authenticate);
 // Get transport queue (Kanban: pending + in_transit)
 router.get('/queue', authorize('transport', 'read'), transportController.getQueue);
 
+router.post(
+  '/external',
+  authorize('transport', 'create'),
+  auditMiddleware('transport'),
+  transportController.createExternal
+);
+
 // Get completed history
 router.get('/history', authorize('transport', 'read'), transportController.getHistory);
 

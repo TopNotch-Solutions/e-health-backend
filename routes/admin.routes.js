@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const adminController = require('../controllers/admin.controller');
 const adminPatientRecordsController = require('../controllers/adminPatientRecords.controller');
+const adminTransferTimelineController = require('../controllers/adminTransferTimeline.controller');
 const { authenticate } = require('../middleware/auth');
 const { authorize, allowRoles } = require('../middleware/rbac');
 const { auditMiddleware } = require('../middleware/audit');
@@ -13,6 +14,37 @@ router.get('/dashboard', allowRoles('system_admin'), adminController.getDashboar
 // Facility management (national)
 router.get('/facilities', authorize('facility', 'read'), adminController.getFacilities);
 router.post('/facilities', authorize('facility', 'create'), auditMiddleware('facility'), adminController.createFacility);
+router.get('/clinic-departments/catalog', authorize('facility', 'read'), adminController.getClinicDepartmentCatalog);
+router.get('/facilities/:id/departments', authorize('facility', 'read'), adminController.getFacilityDepartments);
+router.post(
+  '/facilities/:id/departments',
+  authorize('facility', 'update'),
+  auditMiddleware('facility_department'),
+  adminController.addFacilityDepartment
+);
+router.post(
+  '/facilities/:id/departments/remove',
+  authorize('facility', 'update'),
+  auditMiddleware('facility_department'),
+  adminController.removeFacilityDepartments
+);
+router.post(
+  '/facilities/:id/departments/:departmentKey/remove',
+  authorize('facility', 'update'),
+  auditMiddleware('facility_department'),
+  adminController.removeFacilityDepartment
+);
+router.delete(
+  '/facilities/:id/departments/:departmentKey',
+  authorize('facility', 'update'),
+  auditMiddleware('facility_department'),
+  adminController.removeFacilityDepartment
+);
+router.get(
+  '/facilities/:id/departments/:departmentKey',
+  authorize('facility', 'read'),
+  adminController.getFacilityDepartmentDetail
+);
 
 // User management
 router.get('/users', authorize('user', 'read'), adminController.getUsers);
@@ -43,6 +75,18 @@ router.get(
   '/patients/:id/medical-history/export',
   allowRoles('system_admin'),
   adminPatientRecordsController.exportMedicalHistory
+);
+
+// Clinic → hospital transfer timelines (system admin only)
+router.get(
+  '/transfer-timelines',
+  allowRoles('system_admin'),
+  adminTransferTimelineController.listTransfers
+);
+router.get(
+  '/transfer-timelines/export',
+  allowRoles('system_admin'),
+  adminTransferTimelineController.exportTransfers
 );
 
 // Social Worker Cases

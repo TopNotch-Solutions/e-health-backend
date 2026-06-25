@@ -15,7 +15,10 @@ const ROLES = {
   RADIOLOGIST_SUPERVISOR: 'radiologist_supervisor',
   WARD_SUPERVISOR: 'ward_supervisor',
   WARD_STAFF: 'ward_staff',
+  /** @deprecated use INTERNAL_PORTER — legacy slug kept for existing accounts */
   PORTER: 'porter',
+  INTERNAL_PORTER: 'internal_porter',
+  EXTERNAL_PORTER: 'external_porter',
   KITCHEN_STAFF: 'kitchen_staff',
   KITCHEN_MANAGER: 'kitchen_manager',
   BILLING_CLERK: 'billing_clerk',
@@ -47,6 +50,17 @@ const ROLES = {
   MATERNITY_PNW_STAFF: 'maternity_pnw_staff',
   MATERNITY_ICU_STAFF: 'maternity_icu_staff',
   MATERNITY_NICU_STAFF: 'maternity_nicu_staff',
+  // Hospital outpatient receiving departments (clinic referrals)
+  PEDIATRIC_OUTPATIENT_NURSE: 'pediatric_outpatient_nurse',
+  ENT_NURSE: 'ent_nurse',
+  HOSPITAL_EMERGENCY_NURSE: 'hospital_emergency_nurse',
+  EYE_NURSE: 'eye_nurse',
+  ORTHOPEDIC_OUTPATIENT_NURSE: 'orthopedic_outpatient_nurse',
+  ADULT_OUTPATIENT_NURSE: 'adult_outpatient_nurse',
+  PHYSIOTHERAPY_NURSE: 'physiotherapy_nurse',
+  BIG_ROOM_SPECIALIST_NURSE: 'big_room_specialist_nurse',
+  UROLOGY_NURSE: 'urology_nurse',
+  MENTAL_HEALTH_NURSE: 'mental_health_nurse',
 };
 
 const PERMISSIONS = {
@@ -115,6 +129,7 @@ const ROLE_PERMISSIONS = {
     patient: ['read'],
     queue: ['read'],
     analytics: ['read'],
+    transport: ['create', 'read'],
   },
   [ROLES.NURSE]: {
     patient: ['read'],
@@ -230,6 +245,16 @@ const ROLE_PERMISSIONS = {
     transport: ['read', 'update'],
     queue: ['read'],
   },
+  [ROLES.INTERNAL_PORTER]: {
+    patient: ['read'],
+    transport: ['read', 'update', 'create'],
+    queue: ['read'],
+  },
+  [ROLES.EXTERNAL_PORTER]: {
+    patient: ['read'],
+    transport: ['read', 'update', 'create'],
+    queue: ['read'],
+  },
   [ROLES.KITCHEN_STAFF]: {
     diet: ['read'],
     meal_plan: ['read', 'update'],
@@ -318,10 +343,36 @@ ROLE_PERMISSIONS[ROLES.BOOKING_ROOM] = {
   ...CLINIC_FRONT_OFFICE_PERMISSIONS,
   patient: ['create', 'read', 'update'],
   consultation: ['read'],
-  referral: ['create', 'read'],
+  referral: ['create', 'read', 'update'],
   mortuary: ['create', 'read'],
   queue: ['read', 'update'],
+  transport: ['create', 'read', 'update'],
 };
+
+// Hospital outpatient receiving nurses — inbound clinic referral queue
+const HOSPITAL_OUTPATIENT_NURSE_PERMISSIONS = {
+  patient: ['read'],
+  vitals: ['read'],
+  consultation: ['read'],
+  referral: ['read', 'update'],
+  queue: ['read', 'update'],
+  transport: ['read'],
+};
+
+[
+  ROLES.PEDIATRIC_OUTPATIENT_NURSE,
+  ROLES.ENT_NURSE,
+  ROLES.HOSPITAL_EMERGENCY_NURSE,
+  ROLES.EYE_NURSE,
+  ROLES.ORTHOPEDIC_OUTPATIENT_NURSE,
+  ROLES.ADULT_OUTPATIENT_NURSE,
+  ROLES.PHYSIOTHERAPY_NURSE,
+  ROLES.BIG_ROOM_SPECIALIST_NURSE,
+  ROLES.UROLOGY_NURSE,
+  ROLES.MENTAL_HEALTH_NURSE,
+].forEach((role) => {
+  ROLE_PERMISSIONS[role] = HOSPITAL_OUTPATIENT_NURSE_PERMISSIONS;
+});
 
 // Maternity hospital staff — nurse-like clinical queue permissions + ward tracking
 const MATERNITY_NURSE_PERMISSIONS = {

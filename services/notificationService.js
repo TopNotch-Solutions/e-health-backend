@@ -101,12 +101,17 @@ function emitDashboardStats(stats) {
   });
 }
 
+const {
+  emitTransportSocketRefresh,
+} = require('../config/porterRoles');
+
 /**
- * Emit transport request to porter room.
+ * Emit transport request to porter room(s).
  */
 function emitTransportRequest(data) {
   safeSocketEmit('emitTransportRequest', (io) => {
-    io.to('room:porter').emit('transport:new_request', data);
+    const scope = data?.transportRequest?.transport_scope || 'internal';
+    emitTransportSocketRefresh(io, scope, 'transport:new_request', data);
   });
 }
 

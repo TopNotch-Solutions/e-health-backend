@@ -38,7 +38,7 @@ exports.push = async (req, res) => {
     return success(res, entry, 'Patient pushed to queue');
   } catch (err) {
     console.error('Push queue error:', err);
-    const status = err.message?.includes('already in the') ? 409 : 500;
+    const status = err.statusCode || (err.message?.includes('already in the') ? 409 : 500);
     return error(res, err.message || 'Failed to push to queue', status);
   }
 };
@@ -57,7 +57,8 @@ exports.start = async (req, res) => {
 
     return success(res, entry, 'Started serving patient');
   } catch (err) {
-    return error(res, err.message || 'Failed to start', 400);
+    const status = err.statusCode || 400;
+    return error(res, err.message || 'Failed to start', status);
   }
 };
 
