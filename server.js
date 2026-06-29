@@ -45,12 +45,17 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
-// Rate limiting
+// Rate limiting — auth routes use a stricter limiter in middleware/rateLimiter.js
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  windowMs: 15 * 60 * 1000,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    const auth = req.headers.authorization;
+    return Boolean(auth && auth.startsWith('Bearer '));
+  },
+  message: { success: false, message: 'Too many requests. Please wait a moment and try again.' },
 });
 app.use('/api', limiter);
 

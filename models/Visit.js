@@ -40,6 +40,9 @@ module.exports = (sequelize, DataTypes) => {
     Visit.hasMany(models.SonarRequest, { foreignKey: 'visit_id', as: 'sonarRequests' });
     Visit.hasOne(models.Admission, { foreignKey: 'visit_id', as: 'admission' });
     Visit.hasMany(models.TransportRequest, { foreignKey: 'visit_id', as: 'transportRequests' });
+    Visit.hasOne(models.ClinicHospitalTransfer, { foreignKey: 'visit_id', as: 'clinicHospitalTransfer' });
+    Visit.hasMany(models.Referral, { foreignKey: 'visit_id', as: 'referrals' });
+    Visit.hasOne(models.MortuaryRecord, { foreignKey: 'visit_id', as: 'mortuaryRecord' });
     Visit.hasOne(models.MaternityEpisode, { foreignKey: 'visit_id', as: 'maternityEpisode' });
     Visit.hasMany(models.MaternityAncSession, { foreignKey: 'visit_id', as: 'maternityAncSessions' });
     Visit.hasMany(models.MaternityAnwDailyRecord, { foreignKey: 'visit_id', as: 'maternityAnwRecords' });

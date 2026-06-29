@@ -2,7 +2,9 @@
 
 const { Visit, QueueEntry } = require('../models');
 const { routingLabel } = require('../config/clinicQueueDepartments');
+const { departmentLabel: hospitalDepartmentLabel } = require('../config/hospitalOutpatientConfig');
 const { departmentLabel, MATERNITY_DEPARTMENTS } = require('../config/maternityConfig');
+const { serializeTransfer } = require('./clinicHospitalTransferService');
 
 const VITAL_FIELDS = [
   'temperature',
@@ -38,6 +40,97 @@ function pick(obj, keys) {
 
 function sanitizeVitals(vitals) {
   return pick(vitals, VITAL_FIELDS);
+}
+
+function screeningAssessmentClinical(assessment) {
+  const row = pick(assessment, ['symptoms', 'reason', 'diagnosis', 'notes']);
+  return row ? { screening_assessment: row } : null;
+}
+
+function consultationsClinical(visit) {
+  const rows = (visit.consultations || []).map((c) =>
+    pick(c, ['diagnosis', 'notes', 'actions_taken', 'created_at'])
+  ).filter(Boolean);
+  return rows.length ? { consultations: rows } : null;
+}
+
+function clinicalTransferForHistory(transfer) {
+  if (!transfer) return null;
+  const plain = serializeTransfer(transfer, { includeTimeline: false });
+  const row = pick(plain, [
+    'destination_department',
+    'transfer_status',
+    'transfer_reason',
+    'equipment_required',
+    'equipment_notes',
+    'equipment_checklist',
+    'external_porter_notes',
+    'internal_porter_notes',
+    'critical_notes',
+  ]);
+  if (!row) return null;
+  if (transfer.hospitalFacility?.name) {
+    row.destination_hospital = transfer.hospitalFacility.name;
+  }
+  if (row.destination_department) {
+    row.destination_department_label = hospitalDepartmentLabel(row.destination_department);
+  }
+  return row;
+}
+
+function latestReferralClinical(referrals) {
+  const rows = (referrals || [])
+    .map((r) => pick(r, ['referral_type', 'reason', 'destination', 'status', 'created_at']))
+    .filter(Boolean)
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  return rows[0] ? { referral: rows[0] } : null;
+}
+
+function resolvePrepEpisode(visit) {
+  return visit.prepEpisode || null;
+}
+
+function hivTestResultClinical(testResult) {
+  if (!testResult) return null;
+  const row = pick(testResult, ['result', 'test_method', 'kit_batch', 'notes', 'created_at']);
+  if (!row) return null;
+  if (row.result === 'positive') row.result_label = 'Positive';
+  if (row.result === 'negative') row.result_label = 'Negative';
+  return row;
+}
+
+function hivTesterRoutingOutcome(visit, testResult) {
+  if (!testResult?.result) return null;
+  if (testResult.result === 'positive') return 'Escalated to ART nurse';
+  if (resolvePrepEpisode(visit)) return 'Routed to PrEP Suite';
+  return 'Testing session complete';
+}
+
+function hivTesterClinical(visit) {
+  const hivTest = hivTestResultClinical(visit.hivTestResult);
+  if (!hivTest) return null;
+  const out = { hiv_test_result: hivTest };
+  const routing = hivTesterRoutingOutcome(visit, visit.hivTestResult);
+  if (routing) out.routing_outcome = routing;
+  return out;
+}
+
+function prepEpisodeClinical(visit) {
+  const episode = resolvePrepEpisode(visit);
+  if (!episode) return null;
+  const row = pick(episode, [
+    'status',
+    'injection_administered',
+    'session_data',
+    'enrolled_at',
+    'injection_administered_at',
+    'completed_at',
+  ]);
+  if (!row) return null;
+  const out = { prep_episode: row };
+  const hivTest = hivTestResultClinical(visit.hivTestResult);
+  if (hivTest) out.hiv_test_result = hivTest;
+  return out;
 }
 
 function routingLabelForDepartment(dept) {
@@ -123,13 +216,15 @@ function clinicalForDepartment(visit, department) {
   if (maternityClinical) return maternityClinical;
 
   if (['parameter_nurse', 'nurse', 'anc_nurse'].includes(dept)) {
-    return { vitals: sanitizeVitals(v.vitals) };
+    const vitals = sanitizeVitals(v.vitals);
+    return vitals ? { vitals } : null;
   }
   if (dept === 'emergency_unit') {
-    const out = { vitals: sanitizeVitals(v.vitals) };
-    if (v.screeningAssessment) {
-      out.screening_assessment = pick(v.screeningAssessment, ['symptoms', 'reason', 'diagnosis', 'notes']);
-    }
+    const out = {};
+    const vitals = sanitizeVitals(v.vitals);
+    if (vitals) out.vitals = vitals;
+    const screening = screeningAssessmentClinical(v.screeningAssessment);
+    if (screening) Object.assign(out, screening);
     if (v.emergencyInterventions?.length) {
       out.emergency_interventions = v.emergencyInterventions.map((row) =>
         pick(row, ['interventions', 'notes', 'created_at'])
@@ -137,25 +232,35 @@ function clinicalForDepartment(visit, department) {
     }
     return Object.keys(out).length ? out : null;
   }
-  if (dept === 'screening_nurse' && v.screeningAssessment) {
-    return pick(v.screeningAssessment, ['symptoms', 'reason', 'diagnosis', 'notes']);
+  if (dept === 'screening_nurse') {
+    return screeningAssessmentClinical(v.screeningAssessment);
   }
   if (dept === 'dermatologist' && v.dermatologyAssessment) {
-    return pick(v.dermatologyAssessment, [
+    const assessment = pick(v.dermatologyAssessment, [
       'clinical_observations',
       'skin_assessment',
       'differential_diagnosis',
       'treatment_plan',
     ]);
+    return assessment ? { dermatology_assessment: assessment } : null;
   }
   if (['master_doctor', 'doctor', 'emergency_unit_doctor'].includes(dept)) {
-    const rows = (v.consultations || []).map((c) =>
-      pick(c, ['diagnosis', 'notes', 'actions_taken', 'created_at'])
-    ).filter(Boolean);
-    return rows.length ? { consultations: rows } : null;
+    return consultationsClinical(v);
+  }
+  if (dept === 'booking_room') {
+    const out = {};
+    const transfer = clinicalTransferForHistory(v.clinicHospitalTransfer);
+    if (transfer) out.hospital_transfer = transfer;
+    const referral = latestReferralClinical(v.referrals);
+    if (referral) Object.assign(out, referral);
+    if (v.mortuaryRecord) {
+      const mortuary = pick(v.mortuaryRecord, ['cause_of_death', 'date_of_death', 'notes']);
+      if (mortuary) out.mortuary = mortuary;
+    }
+    return Object.keys(out).length ? out : null;
   }
   if (dept === 'family_planning' && v.familyPlanningRecord) {
-    return pick(v.familyPlanningRecord, [
+    const record = pick(v.familyPlanningRecord, [
       'intervention_type',
       'subdermal_insertion_date',
       'subdermal_insertion_notes',
@@ -172,42 +277,40 @@ function clinicalForDepartment(visit, department) {
       'circumcision_post_op_metrics',
       'session_completed_at',
     ]);
+    return record ? { family_planning: record } : null;
   }
-  if (dept === 'prep' && v.prepEpisode) {
-    return pick(v.prepEpisode, [
-      'status',
-      'injection_administered',
-      'session_data',
-      'enrolled_at',
-      'injection_administered_at',
-      'completed_at',
-    ]);
+  if (dept === 'prep') {
+    return prepEpisodeClinical(v);
   }
   if (dept === 'art_nurse' && v.artEpisode) {
-    return pick(v.artEpisode, [
+    const episode = pick(v.artEpisode, [
       'pathway_state',
       'status',
       'pathway_data',
       'enrolled_at',
       'state_entered_at',
     ]);
+    return episode ? { art_episode: episode } : null;
   }
   if (dept === 'pap_smear' && v.papSmearScreening) {
-    return pick(v.papSmearScreening, [
+    const screening = pick(v.papSmearScreening, [
       'clinical_findings',
       'result',
       'recommendation',
       'notes',
     ]);
+    return screening ? { pap_smear_screening: screening } : null;
   }
   if (dept === 'social_worker' && v.socialWorkerAssessment) {
-    return pick(v.socialWorkerAssessment, ['case_history', 'clinical_notes', 'notes']);
+    const assessment = pick(v.socialWorkerAssessment, ['case_history', 'clinical_notes', 'notes']);
+    return assessment ? { social_worker_assessment: assessment } : null;
   }
   if (dept === 'pediatric' && v.pediatricAssessment) {
-    return pick(v.pediatricAssessment, ['weight', 'height', 'findings', 'notes']);
+    const assessment = pick(v.pediatricAssessment, ['weight', 'height', 'findings', 'notes']);
+    return assessment ? { pediatric_assessment: assessment } : null;
   }
-  if (dept === 'hiv_tester' && v.hivTestResult) {
-    return pick(v.hivTestResult, ['result', 'test_type', 'notes']);
+  if (dept === 'hiv_tester') {
+    return hivTesterClinical(v);
   }
   if (dept === 'lab' && v.labRequests?.length) {
     return {
@@ -282,6 +385,7 @@ async function getClinicalMedicalHistory(patientId, facilityId) {
     where,
     include: [
       { association: 'facility', attributes: ['id', 'name'] },
+      { association: 'vitals', required: false },
       { association: 'screeningAssessment' },
       { association: 'papSmearScreening' },
       { association: 'socialWorkerAssessment' },
@@ -302,6 +406,13 @@ async function getClinicalMedicalHistory(patientId, facilityId) {
       { association: 'maternityPnwRecords', separate: true, order: [['record_date', 'ASC']] },
       { association: 'maternityIcuRecords', separate: true, order: [['record_date', 'ASC']] },
       { association: 'maternityNicuRecords', separate: true, order: [['created_at', 'ASC']] },
+      {
+        association: 'clinicHospitalTransfer',
+        required: false,
+        include: [{ association: 'hospitalFacility', attributes: ['id', 'name'] }],
+      },
+      { association: 'referrals', required: false },
+      { association: 'mortuaryRecord', required: false },
     ],
     order: [['created_at', 'DESC']],
   });

@@ -3,6 +3,7 @@
 const { ROLES } = require('./roles');
 const { MATERNITY_ROLE_LABELS } = require('./maternityConfig');
 const { ROLE_LABELS: HOSPITAL_OUTPATIENT_ROLE_LABELS } = require('./hospitalOutpatientConfig');
+const { WARD_STAFF_ROLE_SLUGS, WARD_STAFF_ROLE_LABELS } = require('./wardStaffConfig');
 
 /** Default temporary password for all new employees (clinic and hospital). */
 const CLINIC_DEFAULT_PASSWORD = 'Demo123!';
@@ -27,6 +28,7 @@ const HOSPITAL_ROLE_SLUGS = [
   ROLES.RADIOLOGIST_SUPERVISOR,
   ROLES.WARD_SUPERVISOR,
   ROLES.WARD_STAFF,
+  ...WARD_STAFF_ROLE_SLUGS,
   ROLES.INTERNAL_PORTER,
   ROLES.EXTERNAL_PORTER,
   ROLES.KITCHEN_STAFF,
@@ -126,6 +128,7 @@ const HOSPITAL_ROLE_LABELS = {
   [ROLES.RADIOLOGIST_SUPERVISOR]: 'Radiologist Supervisor',
   [ROLES.WARD_SUPERVISOR]: 'Ward Supervisor',
   [ROLES.WARD_STAFF]: 'Ward Staff',
+  ...WARD_STAFF_ROLE_LABELS,
   [ROLES.PORTER]: 'Internal Porter',
   [ROLES.INTERNAL_PORTER]: 'Internal Porter',
   [ROLES.EXTERNAL_PORTER]: 'External Porter (Ambulance)',

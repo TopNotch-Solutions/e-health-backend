@@ -3,12 +3,13 @@
 const { ROLES, ROLE_PERMISSIONS } = require('../config/roles');
 const { AUTHORIZED_CLINIC_ROLES, HOSPITAL_ROLE_LABELS } = require('../config/clinicRoles');
 const { MATERNITY_ROLE_LABELS } = require('../config/maternityConfig');
-const { ROLE_LABELS: HOSPITAL_OUTPATIENT_ROLE_LABELS } = require('../config/hospitalOutpatientConfig');
+const { WARD_STAFF_ROLE_LABELS } = require('../config/wardStaffConfig');
 const { Role, sequelize } = require('../models');
 
 function displayNameForRole(slug) {
   if (MATERNITY_ROLE_LABELS[slug]) return MATERNITY_ROLE_LABELS[slug];
   if (HOSPITAL_ROLE_LABELS[slug]) return HOSPITAL_ROLE_LABELS[slug];
+  if (WARD_STAFF_ROLE_LABELS[slug]) return WARD_STAFF_ROLE_LABELS[slug];
   if (AUTHORIZED_CLINIC_ROLES[slug]) return AUTHORIZED_CLINIC_ROLES[slug];
   return slug
     .split('_')

@@ -15,6 +15,13 @@ const ROLES = {
   RADIOLOGIST_SUPERVISOR: 'radiologist_supervisor',
   WARD_SUPERVISOR: 'ward_supervisor',
   WARD_STAFF: 'ward_staff',
+  GENERAL_WARD_NURSE: 'general_ward_nurse',
+  PEDIATRIC_WARD_NURSE: 'pediatric_ward_nurse',
+  ICU_WARD_NURSE: 'icu_ward_nurse',
+  SURGICAL_COMPLEX_NURSE: 'surgical_complex_nurse',
+  SPECIALIZED_INPATIENT_NURSE: 'specialized_inpatient_nurse',
+  OUTPATIENT_SPECIALIST_NURSE: 'outpatient_specialist_nurse',
+  PSYCHIATRIC_WARD_NURSE: 'psychiatric_ward_nurse',
   /** @deprecated use INTERNAL_PORTER — legacy slug kept for existing accounts */
   PORTER: 'porter',
   INTERNAL_PORTER: 'internal_porter',
@@ -352,11 +359,13 @@ ROLE_PERMISSIONS[ROLES.BOOKING_ROOM] = {
 // Hospital outpatient receiving nurses — inbound clinic referral queue
 const HOSPITAL_OUTPATIENT_NURSE_PERMISSIONS = {
   patient: ['read'],
-  vitals: ['read'],
-  consultation: ['read'],
+  vitals: ['read', 'create'],
+  consultation: ['read', 'create'],
   referral: ['read', 'update'],
   queue: ['read', 'update'],
   transport: ['read'],
+  bed: ['read'],
+  admission: ['create'],
 };
 
 [
@@ -397,6 +406,12 @@ ROLE_PERMISSIONS[ROLES.MATERNITY_FRONT_OFFICER] = {
   ROLES.MATERNITY_NICU_STAFF,
 ].forEach((role) => {
   ROLE_PERMISSIONS[role] = MATERNITY_NURSE_PERMISSIONS;
+});
+
+const { WARD_STAFF_ROLE_SLUGS } = require('./wardStaffConfig');
+const WARD_STAFF_PERMISSIONS = ROLE_PERMISSIONS[ROLES.WARD_STAFF];
+WARD_STAFF_ROLE_SLUGS.forEach((role) => {
+  ROLE_PERMISSIONS[role] = WARD_STAFF_PERMISSIONS;
 });
 
 module.exports = { ROLES, PERMISSIONS, ROLE_PERMISSIONS };

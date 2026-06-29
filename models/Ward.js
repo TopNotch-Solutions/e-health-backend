@@ -5,7 +5,19 @@ module.exports = (sequelize, DataTypes) => {
     facility_id: { type: DataTypes.CHAR(36), allowNull: false },
     name: { type: DataTypes.STRING(100), allowNull: false },
     ward_number: { type: DataTypes.STRING(20), allowNull: false },
-    ward_type: { type: DataTypes.ENUM('general', 'maternity', 'pediatric', 'icu', 'surgical', 'psychiatric'), allowNull: false },
+    ward_type: {
+      type: DataTypes.ENUM(
+        'general',
+        'maternity',
+        'pediatric',
+        'icu',
+        'surgical_complex',
+        'specialized_inpatient',
+        'outpatient_specialist',
+        'psychiatric'
+      ),
+      allowNull: false,
+    },
     supervisor_id: { type: DataTypes.CHAR(36) },
     total_beds: { type: DataTypes.INTEGER, defaultValue: 0 },
   }, {

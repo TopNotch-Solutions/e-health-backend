@@ -13,6 +13,7 @@ const { Op } = require('sequelize');
 const { success, created, error } = require('../utils/response');
 const notificationService = require('../services/notificationService');
 const { getSupervisorMetrics } = require('../services/wardSupervisorMetricsService');
+const { wardTypeForRole } = require('../config/wardStaffConfig');
 
 // Get all wards with bed summary
 exports.getAll = async (req, res) => {
@@ -413,18 +414,27 @@ const ADMISSION_STAFF_INCLUDES = [
   { association: 'admittedBy', attributes: ['id', 'first_name', 'last_name'] },
 ];
 
-function staffIncludesForFacility(facilityId) {
+function staffIncludesForFacility(facilityId, wardType = null) {
   return ADMISSION_STAFF_INCLUDES.map((inc) => {
     if (inc.as === 'bed') {
       return {
         ...inc,
-        include: inc.include.map((nested) =>
-          nested.as === 'ward' ? { ...nested, where: { facility_id: facilityId } } : nested
-        ),
+        include: inc.include.map((nested) => {
+          if (nested.as !== 'ward') return nested;
+          const wardWhere = { facility_id: facilityId };
+          if (wardType) wardWhere.ward_type = wardType;
+          return { ...nested, where: wardWhere };
+        }),
       };
     }
     return inc;
   });
+}
+
+function assertAdmissionForWardStaffRole(admission, roleName) {
+  const wardType = wardTypeForRole(roleName);
+  if (!wardType) return true;
+  return admission?.bed?.ward?.ward_type === wardType;
 }
 
 function formatAdmissionForStaff(row) {
@@ -496,12 +506,16 @@ function formatAdmissionForStaff(row) {
 // Ward staff: patients awaiting arrival confirmation
 exports.getStaffQueue = async (req, res) => {
   try {
+    const roleName = req.user?.role?.name;
+    const wardType = wardTypeForRole(roleName);
     const admissions = await Admission.findAll({
       where: { status: 'pending_arrival' },
-      include: staffIncludesForFacility(req.user.facility_id),
+      include: staffIncludesForFacility(req.user.facility_id, wardType),
     });
 
-    const payload = admissions.map(formatAdmissionForStaff);
+    const payload = admissions
+      .filter((row) => assertAdmissionForWardStaffRole(row, roleName))
+      .map(formatAdmissionForStaff);
     payload.sort((a, b) => {
       const ae = a.patient?.is_emergency ? 0 : 1;
       const be = b.patient?.is_emergency ? 0 : 1;
@@ -524,10 +538,15 @@ exports.getStaffQueue = async (req, res) => {
 // Ward staff: single admission with full context
 exports.getAdmissionById = async (req, res) => {
   try {
+    const roleName = req.user?.role?.name;
+    const wardType = wardTypeForRole(roleName);
     const admission = await Admission.findByPk(req.params.id, {
-      include: staffIncludesForFacility(req.user.facility_id),
+      include: staffIncludesForFacility(req.user.facility_id, wardType),
     });
     if (!admission) return error(res, 'Admission not found', 404);
+    if (!assertAdmissionForWardStaffRole(admission, roleName)) {
+      return error(res, 'Admission not found', 404);
+    }
     return success(res, formatAdmissionForStaff(admission));
   } catch (err) {
     console.error('Get admission error:', err);
@@ -557,6 +576,10 @@ exports.confirmArrival = async (req, res) => {
       return error(res, 'Admission not found', 404);
     }
     if (!admission.bed?.ward || admission.bed.ward.facility_id !== req.user.facility_id) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Admission not found', 404);
+    }
+    if (!assertAdmissionForWardStaffRole(admission, req.user?.role?.name)) {
       if (!t.finished) await t.rollback();
       return error(res, 'Admission not found', 404);
     }
