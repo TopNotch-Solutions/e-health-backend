@@ -8,7 +8,11 @@ const {
   assertClinicVisitNotExpired,
   getVisitExpiryInfo,
 } = require('./clinicVisitExpiryService');
-const { isClinicFacility } = require('../config/clinicRoles');
+const {
+  expireStaleHospitalVisitsAtFacility,
+  assertHospitalVisitNotExpired,
+} = require('./hospitalVisitExpiryService');
+const { isClinicFacility, isHospitalFacility } = require('../config/clinicRoles');
 
 const ACTIVE_QUEUE_STATUSES = ['waiting', 'in_progress'];
 
@@ -74,6 +78,7 @@ async function pushToQueue({ visit_id, department, priority = 'normal', pushed_b
   if (!visit) throw new Error('Visit not found');
 
   await assertClinicVisitNotExpired(visit, { autoExpire: true });
+  await assertHospitalVisitNotExpired(visit, { autoExpire: true });
 
   await assertQueueDepartmentActiveAtFacility(visit.facility_id, department);
 
@@ -148,6 +153,8 @@ async function getQueue(department, facilityId) {
   const facility = await require('../models').Facility.findByPk(facilityId, { attributes: ['id', 'type'] });
   if (isClinicFacility(facility)) {
     await expireStaleClinicVisitsAtFacility(facilityId);
+  } else if (isHospitalFacility(facility)) {
+    await expireStaleHospitalVisitsAtFacility(facilityId);
   }
   await visitService.reconcileDepartmentStaleVisits(facilityId, department);
 
@@ -231,6 +238,7 @@ async function startEntry(entryId, userId) {
   }
 
   await assertClinicVisitNotExpired(entry.visit, { autoExpire: true });
+  await assertHospitalVisitNotExpired(entry.visit, { autoExpire: true });
 
   await entry.update({
     status: 'in_progress',

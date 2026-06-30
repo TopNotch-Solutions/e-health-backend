@@ -91,6 +91,7 @@ app.use('/api/v1/inventory', require('./routes/inventory.routes'));
 app.use('/api/v1/admin', require('./routes/admin.routes'));
 app.use('/api/v1/analytics', require('./routes/analytics.routes'));
 app.use('/api/v1/executive', require('./routes/executive.routes'));
+app.use('/api/v1/reports', require('./routes/userReport.routes'));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -109,6 +110,9 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 const { ensureRolesSynced } = require('./services/roleSyncService');
+const { ensureReportUploadDirs } = require('./utils/reportUploads');
+
+ensureReportUploadDirs();
 
 sequelize.authenticate()
   .then(() => {
@@ -147,7 +151,9 @@ sequelize.authenticate()
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       const { startClinicVisitExpiryScheduler } = require('./services/clinicVisitExpiryService');
+      const { startHospitalVisitExpiryScheduler } = require('./services/hospitalVisitExpiryService');
       startClinicVisitExpiryScheduler();
+      startHospitalVisitExpiryScheduler();
     });
   })
   .catch((err) => {

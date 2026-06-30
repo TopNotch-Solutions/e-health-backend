@@ -14,7 +14,8 @@ module.exports = (sequelize, DataTypes) => {
         'surgical_complex',
         'specialized_inpatient',
         'outpatient_specialist',
-        'psychiatric'
+        'psychiatric',
+        'adult_outpatient'
       ),
       allowNull: false,
     },

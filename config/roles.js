@@ -96,6 +96,7 @@ const PERMISSIONS = {
   user: ['create', 'read', 'update', 'delete'],
   facility: ['create', 'read', 'update'],
   analytics: ['read'],
+  user_report: ['create', 'read', 'update'],
 };
 
 // Maps each role to its allowed permissions: { resource: [actions] }
@@ -374,7 +375,6 @@ const HOSPITAL_OUTPATIENT_NURSE_PERMISSIONS = {
   ROLES.HOSPITAL_EMERGENCY_NURSE,
   ROLES.EYE_NURSE,
   ROLES.ORTHOPEDIC_OUTPATIENT_NURSE,
-  ROLES.ADULT_OUTPATIENT_NURSE,
   ROLES.PHYSIOTHERAPY_NURSE,
   ROLES.BIG_ROOM_SPECIALIST_NURSE,
   ROLES.UROLOGY_NURSE,
@@ -412,6 +412,39 @@ const { WARD_STAFF_ROLE_SLUGS } = require('./wardStaffConfig');
 const WARD_STAFF_PERMISSIONS = ROLE_PERMISSIONS[ROLES.WARD_STAFF];
 WARD_STAFF_ROLE_SLUGS.forEach((role) => {
   ROLE_PERMISSIONS[role] = WARD_STAFF_PERMISSIONS;
+});
+
+ROLE_PERMISSIONS[ROLES.ICU_WARD_NURSE] = {
+  ...WARD_STAFF_PERMISSIONS,
+  transport: ['read', 'create'],
+  mortuary: ['create'],
+};
+
+ROLE_PERMISSIONS[ROLES.SURGICAL_COMPLEX_NURSE] = {
+  ...WARD_STAFF_PERMISSIONS,
+  transport: ['read', 'create'],
+  mortuary: ['create'],
+};
+
+ROLE_PERMISSIONS[ROLES.SPECIALIZED_INPATIENT_NURSE] = {
+  ...WARD_STAFF_PERMISSIONS,
+  transport: ['read', 'create'],
+  mortuary: ['create'],
+};
+
+ROLE_PERMISSIONS[ROLES.ADULT_OUTPATIENT_NURSE] = {
+  ...WARD_STAFF_PERMISSIONS,
+  transport: ['read', 'create'],
+  mortuary: ['create'],
+};
+
+// Every authenticated user can submit and track reports; system admin can manage all.
+Object.keys(ROLE_PERMISSIONS).forEach((role) => {
+  if (role === ROLES.SYSTEM_ADMIN) {
+    ROLE_PERMISSIONS[role].user_report = ['create', 'read', 'update'];
+  } else {
+    ROLE_PERMISSIONS[role].user_report = ['create', 'read'];
+  }
 });
 
 module.exports = { ROLES, PERMISSIONS, ROLE_PERMISSIONS };

@@ -26,6 +26,10 @@ module.exports = (sequelize, DataTypes) => {
     clinic_hospital_transfer_id: { type: DataTypes.CHAR(36) },
     origin_facility_id: { type: DataTypes.CHAR(36) },
     destination_department: { type: DataTypes.STRING(80) },
+    source_admission_id: { type: DataTypes.CHAR(36) },
+    target_admission_id: { type: DataTypes.CHAR(36) },
+    transfer_type: { type: DataTypes.ENUM('ward_transfer', 'mortuary') },
+    mortuary_record_id: { type: DataTypes.CHAR(36) },
   }, {
     tableName: 'transport_requests',
     timestamps: false,
@@ -36,6 +40,9 @@ module.exports = (sequelize, DataTypes) => {
     TransportRequest.belongsTo(models.Facility, { foreignKey: 'facility_id', as: 'facility' });
     TransportRequest.belongsTo(models.User, { foreignKey: 'assigned_porter', as: 'porter' });
     TransportRequest.belongsTo(models.User, { foreignKey: 'requested_by', as: 'requestedBy' });
+    TransportRequest.belongsTo(models.Admission, { foreignKey: 'source_admission_id', as: 'sourceAdmission' });
+    TransportRequest.belongsTo(models.Admission, { foreignKey: 'target_admission_id', as: 'targetAdmission' });
+    TransportRequest.belongsTo(models.MortuaryRecord, { foreignKey: 'mortuary_record_id', as: 'mortuaryRecord' });
   };
 
   return TransportRequest;

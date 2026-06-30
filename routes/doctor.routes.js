@@ -28,6 +28,14 @@ router.post('/lab-requests', authorize('lab_request', 'create'), auditMiddleware
 // Sonar requests
 router.post('/sonar-requests', authorize('sonar_request', 'create'), auditMiddleware('sonar_request'), doctorController.createSonarRequest);
 
+// Bundled pharmacy / lab / sonar routing
+router.post(
+  '/complete-routing',
+  authorize('consultation', 'update'),
+  auditMiddleware('consultation'),
+  doctorController.completeConsultationRouting
+);
+
 // Admissions
 router.post('/admissions', authorize('admission', 'create'), auditMiddleware('admission'), doctorController.admitPatient);
 

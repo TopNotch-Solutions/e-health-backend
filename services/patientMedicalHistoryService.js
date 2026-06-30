@@ -1,8 +1,11 @@
 'use strict';
 
-const { Visit, QueueEntry } = require('../models');
+const { Visit, QueueEntry, Admission } = require('../models');
 const { routingLabel } = require('../config/clinicQueueDepartments');
-const { departmentLabel: hospitalDepartmentLabel } = require('../config/hospitalOutpatientConfig');
+const {
+  HOSPITAL_OUTPATIENT_DEPARTMENTS,
+  departmentLabel: hospitalDepartmentLabel,
+} = require('../config/hospitalOutpatientConfig');
 const { departmentLabel, MATERNITY_DEPARTMENTS } = require('../config/maternityConfig');
 const { serializeTransfer } = require('./clinicHospitalTransferService');
 
@@ -28,6 +31,78 @@ const VITAL_FIELDS = [
   'visit_classification',
 ];
 
+const HOSPITAL_VITAL_FIELDS = [
+  ...VITAL_FIELDS,
+  'gcs_score',
+  'pain_score',
+  'blood_glucose',
+  'pupillary_check',
+];
+
+const HOSPITAL_OUTPATIENT_DEPT_SET = new Set(Object.values(HOSPITAL_OUTPATIENT_DEPARTMENTS));
+
+const ICU_DAILY_RECORD_FIELDS = [
+  'record_date',
+  'heart_rate',
+  'oxygen_saturation',
+  'respiration_rate',
+  'body_temperature',
+  'blood_pressure_systolic',
+  'blood_pressure_diastolic',
+  'ventilator_pressures_volumes',
+  'urine_output',
+  'arterial_blood_gases',
+  'neurological_checks',
+  'created_at',
+];
+
+const SC_DAILY_RECORD_FIELDS = [
+  'record_date',
+  'heart_rate',
+  'oxygen_saturation',
+  'respiration_rate',
+  'body_temperature',
+  'blood_pressure_systolic',
+  'blood_pressure_diastolic',
+  'pulse_oximetry_spo2',
+  'capnography_etco2',
+  'fio2',
+  'anesthesia_neuro_monitoring',
+  'neuromuscular_tof',
+  'pain_sedation_scores',
+  'created_at',
+];
+
+const SI_DAILY_RECORD_FIELDS = [
+  'record_date',
+  'heart_rate',
+  'oxygen_saturation',
+  'respiration_rate',
+  'body_temperature',
+  'blood_pressure_systolic',
+  'blood_pressure_diastolic',
+  'created_at',
+];
+
+const AO_DAILY_RECORD_FIELDS = [
+  'record_date',
+  'heart_rate',
+  'oxygen_saturation',
+  'respiration_rate',
+  'body_temperature',
+  'blood_pressure_systolic',
+  'blood_pressure_diastolic',
+  'created_at',
+];
+
+const WARD_TYPE_LABELS = {
+  icu: 'ICU',
+  specialized_inpatient: 'Specialized inpatient',
+  surgical_complex: 'Surgical complex',
+  outpatient_specialist: 'Outpatient specialist',
+  adult_outpatient: 'Adult outpatient',
+};
+
 function pick(obj, keys) {
   if (!obj) return null;
   const row = obj.toJSON ? obj.toJSON() : obj;
@@ -40,6 +115,119 @@ function pick(obj, keys) {
 
 function sanitizeVitals(vitals) {
   return pick(vitals, VITAL_FIELDS);
+}
+
+function sanitizeHospitalOutpatientVitals(vitals) {
+  return pick(vitals, HOSPITAL_VITAL_FIELDS);
+}
+
+function parseActionsTaken(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function hospitalOutpatientConsultations(visit) {
+  return (visit.consultations || [])
+    .map((c) => {
+      const actions = parseActionsTaken(c.actions_taken);
+      if (!actions?.hospital_outpatient_disposition) return null;
+      return pick(c, ['diagnosis', 'notes', 'actions_taken', 'created_at']);
+    })
+    .filter(Boolean);
+}
+
+function hospitalOutpatientClinical(visit) {
+  const out = {};
+  const vitals = sanitizeHospitalOutpatientVitals(visit.vitals);
+  if (vitals) out.hospital_outpatient_vitals = vitals;
+
+  const consultations = hospitalOutpatientConsultations(visit);
+  if (consultations.length) out.hospital_outpatient_consultations = consultations;
+
+  const transfer = clinicalTransferForHistory(visit.clinicHospitalTransfer);
+  if (transfer) out.hospital_transfer = transfer;
+
+  return Object.keys(out).length ? out : null;
+}
+
+function wardLabelForType(wardType, wardName) {
+  if (wardType === 'icu') return 'ICU';
+  if (wardName) return wardName;
+  return WARD_TYPE_LABELS[wardType] ? `${WARD_TYPE_LABELS[wardType]} Ward` : 'Ward';
+}
+
+function wardDepartmentSlug(wardType) {
+  if (wardType === 'icu') return 'icu_ward';
+  if (wardType === 'surgical_complex') return 'surgical_complex_ward';
+  if (wardType === 'specialized_inpatient') return 'specialized_inpatient_ward';
+  if (wardType === 'adult_outpatient') return 'adult_outpatient_ward';
+  return `ward_${wardType || 'inpatient'}`;
+}
+
+function serializeAdmissionStop(admission) {
+  const ward = admission.bed?.ward;
+  const wardType = ward?.ward_type;
+  const department = wardDepartmentSlug(wardType);
+
+  const clinical = {
+    ward_admission: pick(admission, ['status', 'admitted_at', 'discharged_at', 'discharge_notes']),
+    ward_location: pick(
+      {
+        ward_name: ward?.name || null,
+        ward_type: wardType || null,
+        room_number: admission.bed?.room_number || null,
+        bed_number: admission.bed?.bed_number || null,
+      },
+      ['ward_name', 'ward_type', 'room_number', 'bed_number']
+    ),
+  };
+
+  const icuRecords = (admission.icuDailyRecords || [])
+    .map((row) => pick(row, ICU_DAILY_RECORD_FIELDS))
+    .filter(Boolean);
+  if (icuRecords.length) clinical.icu_daily_records = icuRecords;
+
+  const scRecords = (admission.surgicalComplexDailyRecords || [])
+    .map((row) => pick(row, SC_DAILY_RECORD_FIELDS))
+    .filter(Boolean);
+  if (scRecords.length) clinical.surgical_complex_daily_records = scRecords;
+
+  const siRecords = (admission.specializedInpatientDailyRecords || [])
+    .map((row) => pick(row, SI_DAILY_RECORD_FIELDS))
+    .filter(Boolean);
+  if (siRecords.length) clinical.specialized_inpatient_daily_records = siRecords;
+
+  const aoRecords = (admission.adultOutpatientDailyRecords || [])
+    .map((row) => pick(row, AO_DAILY_RECORD_FIELDS))
+    .filter(Boolean);
+  if (aoRecords.length) clinical.adult_outpatient_daily_records = aoRecords;
+
+  const firstRecordAt =
+    admission.icuDailyRecords?.[0]?.created_at
+    || admission.surgicalComplexDailyRecords?.[0]?.created_at
+    || admission.specializedInpatientDailyRecords?.[0]?.created_at
+    || admission.adultOutpatientDailyRecords?.[0]?.created_at
+    || null;
+
+  return {
+    department,
+    department_label: wardLabelForType(wardType, ward?.name),
+    status: admission.status,
+    priority: null,
+    arrived_at: admission.admitted_at || firstRecordAt || null,
+    started_at: admission.admitted_at,
+    completed_at: admission.discharged_at,
+    notes: null,
+    clinical: Object.keys(clinical).length ? clinical : null,
+  };
 }
 
 function screeningAssessmentClinical(assessment) {
@@ -332,6 +520,9 @@ function clinicalForDepartment(visit, department) {
       })),
     };
   }
+  if (HOSPITAL_OUTPATIENT_DEPT_SET.has(dept)) {
+    return hospitalOutpatientClinical(v);
+  }
 
   return null;
 }
@@ -350,12 +541,22 @@ function serializeStop(entry, visit) {
   };
 }
 
-function serializeVisit(visit, queueEntries) {
+function stopSortTime(stop) {
+  return new Date(stop.arrived_at || stop.started_at || 0).getTime();
+}
+
+function serializeVisit(visit, queueEntries, admissions = []) {
   const row = visit.toJSON ? visit.toJSON() : visit;
-  const stops = (queueEntries || [])
+  const queueStops = (queueEntries || [])
     .filter((e) => e.visit_id === visit.id)
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
     .map((entry) => serializeStop(entry, visit));
+
+  const admissionStops = (admissions || [])
+    .filter((a) => a.visit_id === visit.id)
+    .map((admission) => serializeAdmissionStop(admission));
+
+  const stops = [...queueStops, ...admissionStops].sort((a, b) => stopSortTime(a) - stopSortTime(b));
 
   return {
     id: row.id,
@@ -437,8 +638,40 @@ async function getClinicalMedicalHistory(patientId, facilityId) {
     order: [['created_at', 'ASC']],
   });
 
+  const admissions = await Admission.findAll({
+    where: { visit_id: visitIds },
+    include: [
+      {
+        association: 'bed',
+        attributes: ['id', 'bed_number', 'room_number', 'ward_id'],
+        include: [{ association: 'ward', attributes: ['id', 'name', 'ward_type'] }],
+      },
+      {
+        association: 'icuDailyRecords',
+        separate: true,
+        order: [['record_date', 'ASC'], ['created_at', 'ASC']],
+      },
+      {
+        association: 'surgicalComplexDailyRecords',
+        separate: true,
+        order: [['record_date', 'ASC'], ['created_at', 'ASC']],
+      },
+      {
+        association: 'specializedInpatientDailyRecords',
+        separate: true,
+        order: [['record_date', 'ASC'], ['created_at', 'ASC']],
+      },
+      {
+        association: 'adultOutpatientDailyRecords',
+        separate: true,
+        order: [['record_date', 'ASC'], ['created_at', 'ASC']],
+      },
+    ],
+    order: [['admitted_at', 'ASC']],
+  });
+
   return {
-    visits: visits.map((visit) => serializeVisit(visit, queueEntries)),
+    visits: visits.map((visit) => serializeVisit(visit, queueEntries, admissions)),
   };
 }
 

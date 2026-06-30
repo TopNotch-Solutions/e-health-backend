@@ -13,9 +13,19 @@ const {
   CLINIC_VISIT_MAX_MS,
   AUTO_CLOSE_QUEUE_NOTE,
 } = require('../config/clinicVisitPolicy');
+const { BOOKING_ROOM_DEPARTMENT } = require('../config/bookingRoomRouting');
 
 const ACTIVE_QUEUE_STATUSES = ['waiting', 'in_progress'];
 const OPEN_TRANSFER_STATUSES = ['pending_booking'];
+const CLINIC_TRANSFER_HOLD_STATUSES = [
+  'pending_booking',
+  'transport_initiated',
+  'external_in_transit',
+  'departed_clinic',
+  'arrived_hospital',
+  'internal_in_transit',
+  'delivered_to_department',
+];
 
 function visitIntakeAt(visit) {
   const row = visit?.toJSON ? visit.toJSON() : visit;
@@ -54,9 +64,31 @@ async function isClinicVisit(visit, transaction = null) {
   return isClinicFacility(facility);
 }
 
+async function isClinicVisitHeldOpen(visitId, transaction = null) {
+  const bookingEntry = await QueueEntry.findOne({
+    where: {
+      visit_id: visitId,
+      department: BOOKING_ROOM_DEPARTMENT,
+      status: { [Op.in]: ACTIVE_QUEUE_STATUSES },
+    },
+    transaction,
+  });
+  if (bookingEntry) return true;
+
+  const openTransfer = await ClinicHospitalTransfer.findOne({
+    where: {
+      visit_id: visitId,
+      transfer_status: { [Op.in]: CLINIC_TRANSFER_HOLD_STATUSES },
+    },
+    transaction,
+  });
+  return Boolean(openTransfer);
+}
+
 async function expireClinicVisit(visit, { transaction = null, now = new Date() } = {}) {
   if (!visit || visit.status !== 'in_progress') return false;
   if (!(await isClinicVisit(visit, transaction))) return false;
+  if (await isClinicVisitHeldOpen(visit.id, transaction)) return false;
   if (!isVisitPastClinicDeadline(visit, now)) return false;
 
   const activeEntries = await QueueEntry.findAll({
@@ -148,6 +180,8 @@ async function assertClinicVisitNotExpired(visit, { autoExpire = true, now = new
 
   if (!isVisitPastClinicDeadline(visit, now)) return visit;
 
+  if (await isClinicVisitHeldOpen(visit.id)) return visit;
+
   if (autoExpire) {
     await expireClinicVisit(visit, { now });
   }
@@ -182,6 +216,7 @@ module.exports = {
   visitExpiresAt,
   isVisitPastClinicDeadline,
   getVisitExpiryInfo,
+  isClinicVisitHeldOpen,
   expireClinicVisit,
   expireStaleClinicVisitsAtFacility,
   expireStaleClinicVisitsGlobally,

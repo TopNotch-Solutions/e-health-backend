@@ -106,6 +106,11 @@ async function assertQueueDepartmentActiveAtFacility(facilityId, queueDepartment
   }
 
   if (isHospitalFacility(facility)) {
+    const { isHospitalCoreQueueDepartment } = require('../config/hospitalQueueConfig');
+    const { isMaternityDepartment } = require('../config/maternityConfig');
+    if (isHospitalCoreQueueDepartment(queueDepartment) || isMaternityDepartment(queueDepartment)) {
+      return;
+    }
     const { assertHospitalQueueDepartmentActive } = require('./clinicHospitalTransferService');
     await assertHospitalQueueDepartmentActive(facilityId, queueDepartment);
   }

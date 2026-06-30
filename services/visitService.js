@@ -8,7 +8,8 @@
 const { Op } = require('sequelize');
 const { Visit, QueueEntry } = require('../models');
 const { expireClinicVisit, isVisitPastClinicDeadline } = require('./clinicVisitExpiryService');
-const { isClinicFacility } = require('../config/clinicRoles');
+const { expireHospitalVisit, isVisitPastHospitalDeadline } = require('./hospitalVisitExpiryService');
+const { isClinicFacility, isHospitalFacility } = require('../config/clinicRoles');
 
 const ACTIVE_VISIT_STATUSES = ['in_progress'];
 const ACTIVE_QUEUE_STATUSES = ['waiting', 'in_progress'];
@@ -182,7 +183,12 @@ async function getActiveVisitContext(patientId, facilityId, transaction = null) 
     const facility = await require('../models').Facility.findByPk(facilityId, { transaction });
     if (isClinicFacility(facility) && isVisitPastClinicDeadline(activeVisit)) {
       await expireClinicVisit(activeVisit, { transaction });
-      activeVisit = null;
+      activeVisit = await findActiveVisitForPatient(patientId, facilityId, transaction);
+      if (activeVisit?.status !== 'in_progress') activeVisit = null;
+    } else if (isHospitalFacility(facility) && isVisitPastHospitalDeadline(activeVisit)) {
+      await expireHospitalVisit(activeVisit, { transaction });
+      activeVisit = await findActiveVisitForPatient(patientId, facilityId, transaction);
+      if (activeVisit?.status !== 'in_progress') activeVisit = null;
     } else {
       await reconcileStaleQueueVisit(activeVisit, transaction);
       activeVisit = await findActiveVisitForPatient(patientId, facilityId, transaction);

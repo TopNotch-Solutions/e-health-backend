@@ -4,6 +4,11 @@ const {
   routingLabel,
 } = require('../config/clinicQueueDepartments');
 const {
+  HOSPITAL_FRONT_OFFICE_DEPARTMENT,
+  isValidHospitalFrontOfficeRouting,
+} = require('../config/hospitalFrontOfficeConfig');
+const { isHospitalFacility } = require('../config/clinicRoles');
+const {
   MAX_PEDIATRIC_AGE_EXCLUSIVE,
   ageFromDateOfBirth,
 } = require('../config/pediatricCorner');
@@ -49,11 +54,36 @@ function assertPediatricEligibleForPatient(dateOfBirth, destination) {
 
 /**
  * Resolve queue department and priority from front office intake payload.
- * - immediate_triage → Emergency Unit (priority emergency)
- * - otherwise → selected routing_destination (required for non-immediate)
+ * - Hospital: always nurse (optional emergency priority)
+ * - Clinic immediate_triage → Emergency Unit (priority emergency)
+ * - Clinic otherwise → selected routing_destination (required for non-immediate)
  */
-function resolveFrontOfficeRouting(body = {}) {
+function resolveFrontOfficeRouting(body = {}, { facility } = {}) {
   const isEmergency = parseFlag(body.is_emergency);
+
+  if (facility && isHospitalFacility(facility)) {
+    if (parseFlag(body.immediate_triage)) {
+      const err = new Error('Immediate triage routing is not available at hospital front office');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const destination = body.routing_destination || HOSPITAL_FRONT_OFFICE_DEPARTMENT;
+    if (!isValidHospitalFrontOfficeRouting(destination)) {
+      const err = new Error('Hospital front office can only route patients to the nurse queue');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    return {
+      department: HOSPITAL_FRONT_OFFICE_DEPARTMENT,
+      priority: isEmergency ? 'emergency' : 'normal',
+      immediateTriage: false,
+      isEmergency,
+      routingLabel: routingLabel(HOSPITAL_FRONT_OFFICE_DEPARTMENT),
+    };
+  }
+
   const immediateTriage = parseFlag(body.immediate_triage);
 
   if (immediateTriage) {

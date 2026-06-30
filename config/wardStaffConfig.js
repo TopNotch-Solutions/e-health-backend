@@ -9,6 +9,7 @@ const WARD_STAFF_DEFINITIONS = [
   { key: 'specialized_inpatient_nurse', wardType: 'specialized_inpatient', label: 'Specialized Inpatient', nurseLabel: 'Specialized Inpatient Nurse' },
   { key: 'outpatient_specialist_nurse', wardType: 'outpatient_specialist', label: 'Outpatient Specialist', nurseLabel: 'Outpatient Specialist Nurse' },
   { key: 'psychiatric_ward_nurse', wardType: 'psychiatric', label: 'Psychiatric Ward', nurseLabel: 'Psychiatric Ward Nurse' },
+  { key: 'adult_outpatient_nurse', wardType: 'adult_outpatient', label: 'Adult Outpatient', nurseLabel: 'Adult Outpatient Nurse' },
 ];
 
 const WARD_TYPE_BY_ROLE = Object.fromEntries(

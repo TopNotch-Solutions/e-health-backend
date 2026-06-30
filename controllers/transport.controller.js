@@ -268,6 +268,10 @@ exports.complete = async (req, res) => {
       if (request.clinic_hospital_transfer_id && request.transport_scope === 'internal') {
         await onInternalTransportCompleted(request.clinic_hospital_transfer_id);
       }
+      const { onIcuTransferTransportCompleted } = require('../services/icuWardService');
+      if (request.transfer_type) {
+        await onIcuTransferTransportCompleted(request);
+      }
     } catch (e) {
       /* ignore */
     }

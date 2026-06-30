@@ -23,6 +23,19 @@ module.exports = (sequelize, DataTypes) => {
     Admission.belongsTo(models.Bed, { foreignKey: 'bed_id', as: 'bed' });
     Admission.belongsTo(models.User, { foreignKey: 'admitted_by', as: 'admittedBy' });
     Admission.hasMany(models.DietPrescription, { foreignKey: 'admission_id', as: 'dietPrescriptions' });
+    Admission.hasMany(models.IcuDailyRecord, { foreignKey: 'admission_id', as: 'icuDailyRecords' });
+    Admission.hasMany(models.SurgicalComplexDailyRecord, {
+      foreignKey: 'admission_id',
+      as: 'surgicalComplexDailyRecords',
+    });
+    Admission.hasMany(models.SpecializedInpatientDailyRecord, {
+      foreignKey: 'admission_id',
+      as: 'specializedInpatientDailyRecords',
+    });
+    Admission.hasMany(models.AdultOutpatientDailyRecord, {
+      foreignKey: 'admission_id',
+      as: 'adultOutpatientDailyRecords',
+    });
   };
 
   return Admission;

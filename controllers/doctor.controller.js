@@ -705,6 +705,322 @@ exports.createSonarRequest = async (req, res) => {
   }
 };
 
+// Complete consultation — route to pharmacy, laboratory, and/or ultrasound in one step.
+exports.completeConsultationRouting = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const {
+      visit_id,
+      queue_entry_id,
+      consultation_id,
+      items: prescriptionItemsBody,
+      tests,
+      lab_clinical_notes,
+      lab_is_emergency,
+      scan_type,
+      scan_id,
+      sonar_symptoms,
+      sonar_clinical_notes,
+      sonar_diagnostic_questions,
+      sonar_prep_instructions,
+      sonar_is_emergency,
+    } = req.body;
+
+    if (!visit_id || !consultation_id) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'visit_id and consultation_id are required', 400);
+    }
+
+    const hasPrescription = Array.isArray(prescriptionItemsBody) && prescriptionItemsBody.length > 0;
+    const hasLab = Array.isArray(tests) && tests.length > 0;
+    const hasSonar = Boolean((scan_type || '').trim());
+
+    if (!hasPrescription && !hasLab && !hasSonar) {
+      if (!t.finished) await t.rollback();
+      return error(
+        res,
+        'Add at least one prescription, laboratory test, or ultrasound referral before completing',
+        400
+      );
+    }
+
+    const visit = await Visit.findByPk(visit_id, {
+      include: [{ model: Patient, as: 'patient', attributes: ['id', 'is_emergency'] }],
+      transaction: t,
+    });
+    if (!visit) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Visit not found', 404);
+    }
+
+    const consultation = await Consultation.findByPk(consultation_id, { transaction: t });
+    if (!consultation) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Consultation not found. Complete diagnosis and try again.', 404);
+    }
+    if (consultation.visit_id !== visit_id) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'Consultation does not belong to this visit', 400);
+    }
+
+    const emergency =
+      Boolean(lab_is_emergency)
+      || Boolean(sonar_is_emergency)
+      || Boolean(visit.patient?.is_emergency);
+    const queuePriority = emergency ? 'emergency' : 'normal';
+
+    let labRequest = null;
+    if (hasLab) {
+      const testLabels = tests.map((x) => x.name || x.id).filter(Boolean);
+      const test_type =
+        testLabels.length <= 2
+          ? testLabels.join(', ')
+          : `${testLabels.slice(0, 2).join(', ')} +${testLabels.length - 2} more`;
+
+      labRequest = await LabRequest.create(
+        {
+          id: uuidv4(),
+          visit_id,
+          requested_by: req.user.id,
+          test_type: test_type || 'Laboratory panel',
+          clinical_notes: lab_clinical_notes || null,
+          tests,
+          is_emergency: emergency,
+          status: 'pending_sample',
+        },
+        { transaction: t }
+      );
+    }
+
+    let sonarRequest = null;
+    if (hasSonar) {
+      sonarRequest = await SonarRequest.create(
+        {
+          id: uuidv4(),
+          visit_id,
+          requested_by: req.user.id,
+          scan_type: scan_type.trim(),
+          symptoms: sonar_symptoms?.trim() || null,
+          clinical_notes: sonar_clinical_notes?.trim() || null,
+          diagnostic_questions: sonar_diagnostic_questions?.trim() || null,
+          prep_instructions: sonar_prep_instructions?.trim() || null,
+          is_emergency: emergency,
+          status: 'pending',
+        },
+        { transaction: t }
+      );
+    }
+
+    let prescription = null;
+    let prescriptionItems = [];
+    let lowStockAlerts = [];
+    let lowStockNote = null;
+
+    if (hasPrescription) {
+      const bundle = await createPrescriptionWithItems({
+        visit_id,
+        consultation_id,
+        items: prescriptionItemsBody,
+        prescribed_by: req.user.id,
+        facility_id: req.user.facility_id,
+        transaction: t,
+      });
+      prescription = bundle.prescription;
+      prescriptionItems = bundle.prescriptionItems;
+      lowStockAlerts = bundle.lowStockAlerts;
+      lowStockNote = bundle.lowStockNote;
+    }
+
+    await billingChargeService.chargeConsultationFee(
+      visit_id,
+      consultation_id,
+      req.user.facility_id,
+      t
+    );
+
+    let doctorEntry = null;
+    for (const dept of CONSULTATION_QUEUE_DEPARTMENTS) {
+      doctorEntry = await queueService.findActiveEntryForVisit(visit_id, dept, t);
+      if (doctorEntry) break;
+    }
+    if (!doctorEntry && queue_entry_id) {
+      doctorEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+    }
+
+    const activeDoctorEntry =
+      doctorEntry
+      && CONSULTATION_QUEUE_DEPARTMENTS.includes(doctorEntry.department)
+      && ['waiting', 'in_progress'].includes(doctorEntry.status)
+        ? doctorEntry
+        : null;
+
+    const primaryDepartment = hasLab ? 'lab' : hasSonar ? 'sonar' : 'pharmacy';
+    const primaryNotes = hasLab
+      ? `Laboratory: ${labRequest.test_type}`
+      : hasSonar
+        ? `Ultrasound: ${scan_type.trim()}`
+        : lowStockNote;
+
+    let queueResult = { completedEntry: null, nextEntry: null };
+
+    try {
+      if (activeDoctorEntry) {
+        queueResult = await queueService.completeEntry(
+          activeDoctorEntry.id,
+          {
+            nextDepartment: primaryDepartment,
+            nextPriority: queuePriority,
+            notes: primaryNotes,
+            pushed_by: req.user.id,
+          },
+          t
+        );
+      } else {
+        queueResult.nextEntry = await queueService.pushToQueue(
+          {
+            visit_id,
+            department: primaryDepartment,
+            priority: queuePriority,
+            pushed_by: req.user.id,
+            notes: primaryNotes,
+          },
+          t
+        );
+      }
+    } catch (queueErr) {
+      if (!t.finished) await t.rollback();
+      const msg = queueErr.message || 'Failed to update patient queue';
+      const status = msg.includes('already in the') ? 409 : 400;
+      return error(res, msg, status);
+    }
+
+    if (labRequest && queueResult.nextEntry?.id) {
+      await labRequest.update({ queue_entry_id: queueResult.nextEntry.id }, { transaction: t });
+    }
+    if (sonarRequest && primaryDepartment === 'sonar' && queueResult.nextEntry?.id) {
+      await sonarRequest.update({ queue_entry_id: queueResult.nextEntry.id }, { transaction: t });
+    }
+
+    const extraQueues = [];
+
+    async function pushExtra(department, notes) {
+      const entry = await queueService.pushToQueue(
+        {
+          visit_id,
+          department,
+          priority: queuePriority,
+          pushed_by: req.user.id,
+          notes,
+        },
+        t
+      );
+      extraQueues.push({ department, entry });
+      return entry;
+    }
+
+    if (hasSonar && primaryDepartment !== 'sonar') {
+      const sonarEntry = await pushExtra('sonar', `Ultrasound: ${scan_type.trim()}`);
+      if (sonarRequest) {
+        await sonarRequest.update({ queue_entry_id: sonarEntry.id }, { transaction: t });
+      }
+    }
+
+    if (hasPrescription && primaryDepartment !== 'pharmacy') {
+      const pharmacyNotes = [lowStockNote, 'Queued with consultation routing'].filter(Boolean).join(' · ');
+      await pushExtra('pharmacy', pharmacyNotes || null);
+    }
+
+    await t.commit();
+
+    try {
+      const io = getIO();
+      if (queueResult.completedEntry) {
+        const completedDept = queueResult.completedEntry.department || 'doctor';
+        io.to(`room:${completedDept}`).emit('queue:patient_moved', {
+          entryId: queueResult.completedEntry.id,
+          status: 'completed',
+          department: completedDept,
+        });
+        const doctorEntries = await queueService.getQueue('doctor', req.user.facility_id);
+        io.to('room:doctor').emit('queue:refresh', { department: 'doctor', entries: doctorEntries });
+      }
+
+      if (queueResult.nextEntry) {
+        if (primaryDepartment === 'lab') {
+          io.to('room:lab_technician').emit('queue:new_patient', {
+            queueEntry: queueResult.nextEntry,
+            labRequest,
+          });
+          io.to('room:lab_technician').emit('queue:refresh', { department: 'lab' });
+        } else if (primaryDepartment === 'sonar') {
+          io.to('room:radiologist').emit('queue:new_patient', {
+            queueEntry: queueResult.nextEntry,
+            sonarRequest,
+          });
+          io.to('room:radiologist').emit('queue:refresh', { department: 'sonar' });
+        } else if (primaryDepartment === 'pharmacy') {
+          io.to('room:pharmacy').emit('queue:new_patient', { queueEntry: queueResult.nextEntry });
+          io.to('room:pharmacist').emit('queue:new_patient', { queueEntry: queueResult.nextEntry });
+        }
+      }
+
+      for (const { department, entry } of extraQueues) {
+        if (department === 'sonar') {
+          io.to('room:radiologist').emit('queue:new_patient', { queueEntry: entry, sonarRequest });
+          io.to('room:radiologist').emit('queue:refresh', { department: 'sonar' });
+        } else if (department === 'pharmacy') {
+          io.to('room:pharmacy').emit('queue:new_patient', { queueEntry: entry });
+          io.to('room:pharmacist').emit('queue:new_patient', { queueEntry: entry });
+        }
+      }
+
+      if (lowStockAlerts.length > 0) {
+        notificationService.emitStockAlert({
+          prescription_id: prescription.id,
+          visit_id,
+          alerts: lowStockAlerts,
+          doctor: `${req.user.first_name} ${req.user.last_name}`,
+        });
+      }
+
+      emitDoctorActivity({
+        visitId: visit_id,
+        consultationId: consultation_id,
+        doctorId: req.user.id,
+        action: 'consultation_routing',
+      });
+    } catch (emitErr) {
+      console.error('Consultation routing socket emit error:', emitErr.message);
+    }
+
+    const destinations = [];
+    if (hasPrescription) destinations.push('pharmacy');
+    if (hasLab) destinations.push('laboratory');
+    if (hasSonar) destinations.push('ultrasound');
+
+    return created(
+      res,
+      {
+        labRequest,
+        sonarRequest,
+        prescription,
+        prescriptionItems,
+        lowStockAlerts,
+        queueEntry: queueResult.nextEntry,
+        extraQueues: extraQueues.map(({ department, entry }) => ({ department, queueEntry: entry })),
+        doctorQueueCompleted: Boolean(queueResult.completedEntry),
+      },
+      `Consultation completed — patient routed to ${destinations.join(', ')}`
+    );
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    console.error('Complete consultation routing error:', err);
+    const message = err.message || 'Failed to complete consultation routing';
+    const status = message.includes('already in the') ? 409 : 500;
+    return error(res, message, status);
+  }
+};
+
 // Admit patient to ward
 exports.admitPatient = async (req, res) => {
   const t = await sequelize.transaction();
@@ -873,7 +1189,12 @@ exports.dischargePatient = async (req, res) => {
   try {
     const { id } = req.params;
     const { discharge_notes, discharge_reason } = req.body;
-    const dischargeNotes = (discharge_reason || discharge_notes || '').trim() || null;
+    const reason = (discharge_reason || '').trim();
+    if (!reason) {
+      if (!t.finished) await t.rollback();
+      return error(res, 'discharge_reason is required', 400);
+    }
+    const dischargeNotes = reason || (discharge_notes || '').trim() || null;
 
     const result = await finalizeOutpatientDischarge({
       visitId: id,

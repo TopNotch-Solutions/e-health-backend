@@ -4,7 +4,7 @@ const CLINIC_FRONT_OFFICE_ROLES = ['front_office', 'booking_room'];
 function isClinicFrontOffice(role) {
   return CLINIC_FRONT_OFFICE_ROLES.includes(role);
 }
-const { Patient, Visit, sequelize } = require('../models');
+const { Patient, Visit, Facility, sequelize } = require('../models');
 const { generatePatientNumber, generateVisitNumber, generateEmergencyId } = require('../utils/idGenerator');
 const { success, created, error, paginated } = require('../utils/response');
 const { getIO } = require('../socket');
@@ -51,7 +51,7 @@ exports.register = async (req, res) => {
       accompanied_by,
       sex,
       date_of_birth,
-    });
+    }, { facility: await Facility.findByPk(req.user.facility_id, { transaction: t }) });
 
     const isEmergency = routing.isEmergency;
     let patientCategory = category || 'known';
@@ -528,7 +528,7 @@ exports.createVisit = async (req, res) => {
       accompanied_by,
       sex: patient.sex,
       date_of_birth: patient.date_of_birth,
-    });
+    }, { facility: await Facility.findByPk(req.user.facility_id, { transaction: t }) });
 
     const patientUpdates = { category: 'returning' };
     if (routing.isEmergency) patientUpdates.is_emergency = true;

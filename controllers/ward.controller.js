@@ -14,6 +14,14 @@ const { success, created, error } = require('../utils/response');
 const notificationService = require('../services/notificationService');
 const { getSupervisorMetrics } = require('../services/wardSupervisorMetricsService');
 const { wardTypeForRole } = require('../config/wardStaffConfig');
+const icuWardService = require('../services/icuWardService');
+const surgicalComplexWardService = require('../services/surgicalComplexWardService');
+const specializedInpatientWardService = require('../services/specializedInpatientWardService');
+const adultOutpatientWardService = require('../services/adultOutpatientWardService');
+const { validateIcuDailyRecord } = require('../config/icuWardValidation');
+const { validateSurgicalComplexDailyRecord } = require('../config/surgicalComplexWardValidation');
+const { validateSpecializedInpatientDailyRecord } = require('../config/specializedInpatientWardValidation');
+const { validateAdultOutpatientDailyRecord } = require('../config/adultOutpatientWardValidation');
 
 // Get all wards with bed summary
 exports.getAll = async (req, res) => {
@@ -350,12 +358,16 @@ exports.updateBed = async (req, res) => {
 // Get available beds (for doctor when admitting)
 exports.getAvailableBeds = async (req, res) => {
   try {
+    const { ward_type: wardType } = req.query;
+    const wardWhere = { facility_id: req.user.facility_id };
+    if (wardType) wardWhere.ward_type = wardType;
+
     const beds = await Bed.findAll({
       where: { status: 'available' },
       include: [{
         model: Ward,
         as: 'ward',
-        where: { facility_id: req.user.facility_id },
+        where: wardWhere,
         attributes: ['id', 'name', 'ward_number', 'ward_type'],
       }],
       order: [
@@ -598,6 +610,52 @@ exports.confirmArrival = async (req, res) => {
 
     await admission.bed.update({ status: 'occupied' }, { transaction: t });
 
+    let icuRecord = null;
+    let surgicalComplexRecord = null;
+    let specializedInpatientRecord = null;
+    let adultOutpatientRecord = null;
+    if (admission.bed.ward.ward_type === 'icu') {
+      const recordBody = req.body.icu_record || req.body;
+      validateIcuDailyRecord(recordBody);
+      const saved = await icuWardService.upsertDailyRecordForAdmission({
+        admission,
+        userId: req.user.id,
+        body: recordBody,
+        transaction: t,
+      });
+      icuRecord = icuWardService.formatDailyRecord(saved);
+    } else if (admission.bed.ward.ward_type === 'surgical_complex') {
+      const recordBody = req.body.surgical_complex_record || req.body;
+      validateSurgicalComplexDailyRecord(recordBody);
+      const saved = await surgicalComplexWardService.upsertDailyRecordForAdmission({
+        admission,
+        userId: req.user.id,
+        body: recordBody,
+        transaction: t,
+      });
+      surgicalComplexRecord = surgicalComplexWardService.formatDailyRecord(saved);
+    } else if (admission.bed.ward.ward_type === 'specialized_inpatient') {
+      const recordBody = req.body.specialized_inpatient_record || req.body;
+      validateSpecializedInpatientDailyRecord(recordBody);
+      const saved = await specializedInpatientWardService.upsertDailyRecordForAdmission({
+        admission,
+        userId: req.user.id,
+        body: recordBody,
+        transaction: t,
+      });
+      specializedInpatientRecord = specializedInpatientWardService.formatDailyRecord(saved);
+    } else if (admission.bed.ward.ward_type === 'adult_outpatient') {
+      const recordBody = req.body.adult_outpatient_record || req.body;
+      validateAdultOutpatientDailyRecord(recordBody);
+      const saved = await adultOutpatientWardService.upsertDailyRecordForAdmission({
+        admission,
+        userId: req.user.id,
+        body: recordBody,
+        transaction: t,
+      });
+      adultOutpatientRecord = adultOutpatientWardService.formatDailyRecord(saved);
+    }
+
     await t.commit();
 
     const refreshed = await Admission.findByPk(admission.id, {
@@ -613,11 +671,24 @@ exports.confirmArrival = async (req, res) => {
     });
     notificationService.emitWardStaffQueueRefresh({ reason: 'arrival_confirmed' });
 
-    return success(res, formatAdmissionForStaff(refreshed), 'Patient arrival confirmed');
+    const payload = formatAdmissionForStaff(refreshed);
+    if (icuRecord) payload.icu_record = icuRecord;
+    if (surgicalComplexRecord) payload.surgical_complex_record = surgicalComplexRecord;
+    if (specializedInpatientRecord) payload.specialized_inpatient_record = specializedInpatientRecord;
+    if (adultOutpatientRecord) payload.adult_outpatient_record = adultOutpatientRecord;
+
+    return success(res, payload, 'Patient arrival confirmed');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('Confirm arrival error:', err);
-    return error(res, 'Failed to confirm arrival', 500);
+    if (err.statusCode === 400 && err.validationErrors) {
+      return res.status(400).json({
+        success: false,
+        message: err.message,
+        validation_errors: err.validationErrors,
+      });
+    }
+    return error(res, err.message || 'Failed to confirm arrival', err.statusCode || 500);
   }
 };
 
@@ -681,3 +752,5 @@ exports.getAdmissions = async (req, res) => {
     return error(res, 'Failed to fetch admissions', 500);
   }
 };
+
+exports.formatAdmissionForStaff = formatAdmissionForStaff;
