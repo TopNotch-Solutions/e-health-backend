@@ -7,9 +7,8 @@ const {
 } = require('../config/clinicQueueDepartments');
 const { SCREENING_DESTINATIONS } = require('../config/screeningNurseRouting');
 const { VISIT_CLASSIFICATIONS } = require('../config/parameterNurseRouting');
-const { getActiveQueueDepartmentsForFacility } = require('./clinicFacilityDepartmentService');
+const { getActiveQueueDepartmentsForFacility, getHospitalFrontOfficeRoutingForFacility } = require('./clinicFacilityDepartmentService');
 const { isHospitalFacility } = require('../config/clinicRoles');
-const { HOSPITAL_FRONT_OFFICE_ROUTING } = require('../config/hospitalFrontOfficeConfig');
 const { Facility } = require('../models');
 
 function filterByActiveQueues(options, activeQueues) {
@@ -21,12 +20,13 @@ async function getClinicRoutingOptionsForFacility(facilityId) {
   const facility = facilityId ? await Facility.findByPk(facilityId) : null;
 
   if (facility && isHospitalFacility(facility)) {
+    const front_office = await getHospitalFrontOfficeRoutingForFacility(facilityId);
     return {
       is_clinic: false,
       is_hospital: true,
-      active_queue_departments: HOSPITAL_FRONT_OFFICE_ROUTING.map((row) => row.value),
-      emergency_unit_available: false,
-      front_office: HOSPITAL_FRONT_OFFICE_ROUTING,
+      active_queue_departments: front_office.map((row) => row.value),
+      emergency_unit_available: front_office.some((row) => row.value === 'hospital_emergency_unit'),
+      front_office,
       screening_nurse: [],
       parameter_nurse: {},
     };

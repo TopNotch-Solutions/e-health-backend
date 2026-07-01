@@ -26,6 +26,8 @@ const {
   emitQueueEvents,
   EMERGENCY_UNIT_DEPARTMENT,
 } = require('../utils/patientRouting');
+const { isHospitalFacility } = require('../config/clinicRoles');
+const { HOSPITAL_OUTPATIENT_DEPARTMENTS } = require('../config/hospitalOutpatientConfig');
 
 // Register new patient (Known or Returning)
 exports.register = async (req, res) => {
@@ -43,6 +45,12 @@ exports.register = async (req, res) => {
       return error(res, 'First name, last name, and sex are required', 400);
     }
 
+    const facility = await Facility.findByPk(req.user.facility_id, { transaction: t });
+    const { getHospitalFrontOfficeRoutingForFacility } = require('../services/clinicFacilityDepartmentService');
+    const hospitalFrontOfficeRoutes = facility && isHospitalFacility(facility)
+      ? await getHospitalFrontOfficeRoutingForFacility(facility.id)
+      : [];
+
     const routing = resolveFrontOfficeRouting({
       is_emergency,
       immediate_triage,
@@ -51,7 +59,7 @@ exports.register = async (req, res) => {
       accompanied_by,
       sex,
       date_of_birth,
-    }, { facility: await Facility.findByPk(req.user.facility_id, { transaction: t }) });
+    }, { facility, hospitalFrontOfficeRoutes });
 
     const isEmergency = routing.isEmergency;
     let patientCategory = category || 'known';
@@ -63,11 +71,21 @@ exports.register = async (req, res) => {
 
     let normalizedIdNumber = null;
     let normalizedPhone = null;
+    let normalizedEmergencyPhone = null;
+    let normalizedEmergencyName = null;
     if (!routing.immediateTriage) {
-      normalizedIdNumber = validateNationalIdForRegistration(id_number);
-      normalizedPhone = validatePhoneForRegistration(phone);
+      normalizedIdNumber = validateNationalIdForRegistration(id_number, { required: false });
+      normalizedPhone = validatePhoneForRegistration(phone, { required: false });
+      normalizedEmergencyName = String(emergency_contact_name || '').trim();
+      if (!normalizedEmergencyName) {
+        if (!t.finished) await t.rollback();
+        return error(res, 'Next of kin full name is required to register a new patient.', 400);
+      }
+      normalizedEmergencyPhone = validatePhoneForRegistration(emergency_contact_phone, {
+        label: 'Emergency phone number',
+      });
       await assertUniquePatientIdentifiers(
-        { id_number: normalizedIdNumber, phone: normalizedPhone },
+        { id_number: normalizedIdNumber, phone: normalizedPhone, checkPhone: false },
         t
       );
     }
@@ -85,8 +103,8 @@ exports.register = async (req, res) => {
       id_number: routing.immediateTriage ? null : normalizedIdNumber,
       phone: routing.immediateTriage ? null : normalizedPhone,
       address: routing.immediateTriage ? null : (address || null),
-      emergency_contact_name: routing.immediateTriage ? null : (emergency_contact_name || null),
-      emergency_contact_phone: routing.immediateTriage ? null : (emergency_contact_phone || null),
+      emergency_contact_name: routing.immediateTriage ? null : normalizedEmergencyName,
+      emergency_contact_phone: routing.immediateTriage ? null : normalizedEmergencyPhone,
       temp_id: tempId,
     }, { transaction: t });
 
@@ -160,6 +178,11 @@ exports.emergencyRegister = async (req, res) => {
   try {
     const { sex, notes } = req.body;
 
+    const facility = await Facility.findByPk(req.user.facility_id, { transaction: t });
+    const emergencyDepartment = facility && isHospitalFacility(facility)
+      ? HOSPITAL_OUTPATIENT_DEPARTMENTS.EMERGENCY
+      : EMERGENCY_UNIT_DEPARTMENT;
+
     const tempId = generateEmergencyId();
     const patient = await Patient.create({
       id: uuidv4(),
@@ -180,13 +203,13 @@ exports.emergencyRegister = async (req, res) => {
       visit_number: generateVisitNumber(),
       visit_type: 'emergency',
       status: 'in_progress',
-      current_department: EMERGENCY_UNIT_DEPARTMENT,
+      current_department: emergencyDepartment,
       created_by: req.user.id,
     }, { transaction: t });
 
     const queueEntry = await queueService.pushToQueue({
       visit_id: visit.id,
-      department: EMERGENCY_UNIT_DEPARTMENT,
+      department: emergencyDepartment,
       priority: 'emergency',
       pushed_by: req.user.id,
       notes: notes || 'Immediate triage — unknown emergency patient',
@@ -197,7 +220,7 @@ exports.emergencyRegister = async (req, res) => {
     try {
       const io = getIO();
       const routing = {
-        department: EMERGENCY_UNIT_DEPARTMENT,
+        department: emergencyDepartment,
         immediateTriage: true,
         isEmergency: true,
       };
@@ -520,6 +543,12 @@ exports.createVisit = async (req, res) => {
       routing_destination,
     } = req.body || {};
 
+    const facility = await Facility.findByPk(req.user.facility_id, { transaction: t });
+    const { getHospitalFrontOfficeRoutingForFacility } = require('../services/clinicFacilityDepartmentService');
+    const hospitalFrontOfficeRoutes = facility && isHospitalFacility(facility)
+      ? await getHospitalFrontOfficeRoutingForFacility(facility.id)
+      : [];
+
     const routing = resolveFrontOfficeRouting({
       is_emergency,
       immediate_triage,
@@ -528,7 +557,7 @@ exports.createVisit = async (req, res) => {
       accompanied_by,
       sex: patient.sex,
       date_of_birth: patient.date_of_birth,
-    }, { facility: await Facility.findByPk(req.user.facility_id, { transaction: t }) });
+    }, { facility, hospitalFrontOfficeRoutes });
 
     const patientUpdates = { category: 'returning' };
     if (routing.isEmergency) patientUpdates.is_emergency = true;

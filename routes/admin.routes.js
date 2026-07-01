@@ -15,6 +15,7 @@ router.get('/dashboard', allowRoles('system_admin'), adminController.getDashboar
 router.get('/facilities', authorize('facility', 'read'), adminController.getFacilities);
 router.post('/facilities', authorize('facility', 'create'), auditMiddleware('facility'), adminController.createFacility);
 router.get('/clinic-departments/catalog', authorize('facility', 'read'), adminController.getClinicDepartmentCatalog);
+router.get('/hospital-departments/catalog', authorize('facility', 'read'), adminController.getHospitalDepartmentCatalog);
 router.get('/facilities/:id/departments', authorize('facility', 'read'), adminController.getFacilityDepartments);
 router.post(
   '/facilities/:id/departments',

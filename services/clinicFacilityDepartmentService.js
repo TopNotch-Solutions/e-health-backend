@@ -25,7 +25,57 @@ const {
   MINIMAL_CLINIC_TEMPLATE_KEYS,
   FULL_CLINIC_TEMPLATE_KEYS,
 } = require('../config/clinicFacilityDepartments');
+const {
+  HOSPITAL_DEPARTMENT_DEFINITIONS,
+  HOSPITAL_DEPARTMENT_BY_KEY,
+  hospitalDepartmentLabel,
+  isValidHospitalDepartmentKey,
+  isFoundationHospitalDepartment,
+  resolveHospitalTemplateKeys,
+  getHospitalRequiredDepartment,
+  getHospitalCascadeRemovals,
+  FOUNDATION_HOSPITAL_DEPARTMENT_KEYS,
+  FULL_HOSPITAL_TEMPLATE_KEYS,
+  buildHospitalFrontOfficeRouting,
+} = require('../config/hospitalFacilityDepartments');
 const { isClinicFacility, isHospitalFacility } = require('../config/clinicRoles');
+
+function departmentDefsForFacility(facility) {
+  return isHospitalFacility(facility) ? HOSPITAL_DEPARTMENT_DEFINITIONS : CLINIC_DEPARTMENT_DEFINITIONS;
+}
+
+function departmentByKeyForFacility(facility) {
+  return isHospitalFacility(facility) ? HOSPITAL_DEPARTMENT_BY_KEY : DEPARTMENT_BY_KEY;
+}
+
+function labelForDepartmentKey(key, facility) {
+  if (isHospitalFacility(facility)) return hospitalDepartmentLabel(key);
+  return departmentLabel(key);
+}
+
+function isValidDepartmentKeyForFacility(key, facility) {
+  if (isHospitalFacility(facility)) return isValidHospitalDepartmentKey(key);
+  return isValidDepartmentKey(key);
+}
+
+function isFoundationDepartmentForFacility(key, facility) {
+  if (isHospitalFacility(facility)) return isFoundationHospitalDepartment(key);
+  return isFoundationDepartment(key);
+}
+
+function getRequiredDepartmentForFacility(key, facility) {
+  if (isHospitalFacility(facility)) return getHospitalRequiredDepartment(key);
+  return getRequiredDepartment(key);
+}
+
+function getCascadeRemovalsForFacility(key, facility) {
+  if (isHospitalFacility(facility)) return getHospitalCascadeRemovals(key);
+  return getCascadeRemovals(key);
+}
+
+function facilityTypeLabel(facility) {
+  return isHospitalFacility(facility) ? 'hospital' : 'clinic';
+}
 
 function startOfToday() {
   const d = new Date();
@@ -41,7 +91,8 @@ function daysAgo(n) {
 }
 
 async function seedDepartmentsForFacility(facilityId, departmentKeys, transaction) {
-  const uniqueKeys = [...new Set(departmentKeys.filter(isValidDepartmentKey))];
+  const facility = await Facility.findByPk(facilityId, { transaction });
+  const uniqueKeys = [...new Set(departmentKeys.filter((key) => isValidDepartmentKeyForFacility(key, facility)))];
   const created = [];
 
   for (const key of uniqueKeys) {
@@ -75,15 +126,23 @@ async function getActiveDepartmentKeys(facilityId) {
 
 async function getActiveQueueDepartmentsForFacility(facilityId) {
   const facility = await Facility.findByPk(facilityId);
-  if (!facility || !isClinicFacility(facility)) return null;
+  if (!facility || (!isClinicFacility(facility) && !isHospitalFacility(facility))) return null;
 
   const keys = await getActiveDepartmentKeys(facilityId);
+  const byKey = departmentByKeyForFacility(facility);
   const queues = new Set();
   for (const key of keys) {
-    const def = DEPARTMENT_BY_KEY[key];
+    const def = byKey[key];
     if (def?.queue_department) queues.add(def.queue_department);
   }
   return queues;
+}
+
+async function getHospitalFrontOfficeRoutingForFacility(facilityId) {
+  const facility = await Facility.findByPk(facilityId);
+  if (!facility || !isHospitalFacility(facility)) return [];
+  const keys = await getActiveDepartmentKeys(facilityId);
+  return buildHospitalFrontOfficeRouting(keys);
 }
 
 async function assertQueueDepartmentActiveAtFacility(facilityId, queueDepartment) {
@@ -106,17 +165,25 @@ async function assertQueueDepartmentActiveAtFacility(facilityId, queueDepartment
   }
 
   if (isHospitalFacility(facility)) {
-    const { isHospitalCoreQueueDepartment } = require('../config/hospitalQueueConfig');
-    const { isMaternityDepartment } = require('../config/maternityConfig');
-    if (isHospitalCoreQueueDepartment(queueDepartment) || isMaternityDepartment(queueDepartment)) {
-      return;
+    const activeQueues = await getActiveQueueDepartmentsForFacility(facilityId);
+    if (!activeQueues) return;
+    if (!queueDepartment || !activeQueues.has(queueDepartment)) {
+      const { routingLabel } = require('../config/clinicQueueDepartments');
+      const { hospitalFrontOfficeRoutingLabel } = require('../config/hospitalFrontOfficeConfig');
+      const label = hospitalFrontOfficeRoutingLabel(queueDepartment)
+        || routingLabel(queueDepartment)
+        || queueDepartment;
+      const err = new Error(
+        `${label} is not an active department at this hospital. Ask system administration to add the department first.`
+      );
+      err.statusCode = 400;
+      throw err;
     }
-    const { assertHospitalQueueDepartmentActive } = require('./clinicHospitalTransferService');
-    await assertHospitalQueueDepartmentActive(facilityId, queueDepartment);
   }
 }
 
 async function getFacilityDepartmentChangeHistory(facilityId, limit = 100) {
+  const facility = await Facility.findByPk(facilityId);
   const changes = await FacilityDepartmentChange.findAll({
     where: { facility_id: facilityId },
     include: [{
@@ -131,7 +198,7 @@ async function getFacilityDepartmentChangeHistory(facilityId, limit = 100) {
   return changes.map((c) => ({
     id: c.id,
     department_key: c.department_key,
-    department_label: departmentLabel(c.department_key),
+    department_label: labelForDepartmentKey(c.department_key, facility),
     action: c.action,
     reason: c.reason,
     created_at: c.created_at,
@@ -170,20 +237,21 @@ async function getFacilityDepartmentsSummary(facilityId) {
     staffCounts.map((r) => [r.role_id, parseInt(r.count, 10) || 0])
   );
 
+  const byKey = departmentByKeyForFacility(facility);
   const departments = deptRows.map((row) => {
-    const def = DEPARTMENT_BY_KEY[row.department_key];
+    const def = byKey[row.department_key];
     const roleId = roleIdByName[row.department_key];
     return {
       id: row.id,
       department_key: row.department_key,
-      label: def?.label || departmentLabel(row.department_key),
+      label: def?.label || labelForDepartmentKey(row.department_key, facility),
       employee_count: roleId ? (countByRoleId[roleId] || 0) : 0,
       activity_mode: def?.activity_mode || 'queue',
-      is_foundation: isFoundationDepartment(row.department_key),
+      is_foundation: isFoundationDepartmentForFacility(row.department_key, facility),
     };
   });
 
-  const change_history = isClinicFacility(facility)
+  const change_history = (isClinicFacility(facility) || isHospitalFacility(facility))
     ? await getFacilityDepartmentChangeHistory(facilityId)
     : [];
 
@@ -246,11 +314,11 @@ async function deactivateDepartmentIfActive({
   return true;
 }
 
-function sortDepartmentsForAddition(keys) {
+function sortDepartmentsForAddition(keys, facility) {
   const unique = [...new Set(keys)];
   return unique.sort((a, b) => {
-    const reqA = getRequiredDepartment(a);
-    const reqB = getRequiredDepartment(b);
+    const reqA = getRequiredDepartmentForFacility(a, facility);
+    const reqB = getRequiredDepartmentForFacility(b, facility);
     if (reqA === b) return 1;
     if (reqB === a) return -1;
     return 0;
@@ -259,6 +327,7 @@ function sortDepartmentsForAddition(keys) {
 
 async function addSingleDepartmentInTransaction({
   facilityId,
+  facility,
   departmentKey,
   reason,
   changedBy,
@@ -271,12 +340,12 @@ async function addSingleDepartmentInTransaction({
   });
 
   if (existing?.is_active) {
-    const err = new Error(`${departmentLabel(departmentKey)} is already active at this clinic`);
+    const err = new Error(`${labelForDepartmentKey(departmentKey, facility)} is already active at this ${facilityTypeLabel(facility)}`);
     err.statusCode = 409;
     throw err;
   }
 
-  const requiredParent = getRequiredDepartment(departmentKey);
+  const requiredParent = getRequiredDepartmentForFacility(departmentKey, facility);
   if (requiredParent) {
     const parentInBatch = batchSet?.has(requiredParent);
     if (!parentInBatch) {
@@ -286,7 +355,7 @@ async function addSingleDepartmentInTransaction({
       });
       if (!parentActive) {
         const err = new Error(
-          `${departmentLabel(departmentKey)} requires ${departmentLabel(requiredParent)} to be active at this clinic`
+          `${labelForDepartmentKey(departmentKey, facility)} requires ${labelForDepartmentKey(requiredParent, facility)} to be active at this ${facilityTypeLabel(facility)}`
         );
         err.statusCode = 400;
         throw err;
@@ -328,29 +397,30 @@ async function addDepartments(facilityId, departmentKeys, reason, changedBy) {
   }
 
   const uniqueKeys = [...new Set(departmentKeys)];
+  const facility = await Facility.findByPk(facilityId);
+  if (!facility || (!isClinicFacility(facility) && !isHospitalFacility(facility))) {
+    const err = new Error('Departments can only be managed for clinic or hospital facilities');
+    err.statusCode = 400;
+    throw err;
+  }
+
   for (const key of uniqueKeys) {
-    if (!isValidDepartmentKey(key)) {
-      const err = new Error(`Invalid clinic department: ${key}`);
+    if (!isValidDepartmentKeyForFacility(key, facility)) {
+      const err = new Error(`Invalid ${facilityTypeLabel(facility)} department: ${key}`);
       err.statusCode = 400;
       throw err;
     }
   }
 
-  const facility = await Facility.findByPk(facilityId);
-  if (!facility || !isClinicFacility(facility)) {
-    const err = new Error('Clinic departments can only be managed for clinic facilities');
-    err.statusCode = 400;
-    throw err;
-  }
-
   const batchSet = new Set(uniqueKeys);
-  const sortedKeys = sortDepartmentsForAddition(uniqueKeys);
+  const sortedKeys = sortDepartmentsForAddition(uniqueKeys, facility);
 
   const t = await sequelize.transaction();
   try {
     for (const departmentKey of sortedKeys) {
       await addSingleDepartmentInTransaction({
         facilityId,
+        facility,
         departmentKey,
         reason: reason.trim(),
         changedBy,
@@ -383,26 +453,26 @@ async function removeDepartments(facilityId, departmentKeys, reason, changedBy) 
   }
 
   const requested = [...new Set(departmentKeys)];
+  const facility = await Facility.findByPk(facilityId);
+  if (!facility || (!isClinicFacility(facility) && !isHospitalFacility(facility))) {
+    const err = new Error('Departments can only be managed for clinic or hospital facilities');
+    err.statusCode = 400;
+    throw err;
+  }
+
   for (const key of requested) {
-    if (!isValidDepartmentKey(key)) {
-      const err = new Error(`Invalid clinic department: ${key}`);
+    if (!isValidDepartmentKeyForFacility(key, facility)) {
+      const err = new Error(`Invalid ${facilityTypeLabel(facility)} department: ${key}`);
       err.statusCode = 400;
       throw err;
     }
-    if (isFoundationDepartment(key)) {
+    if (isFoundationDepartmentForFacility(key, facility)) {
       const err = new Error(
-        `${departmentLabel(key)} is a foundation department and cannot be removed`
+        `${labelForDepartmentKey(key, facility)} is a foundation department and cannot be removed`
       );
       err.statusCode = 400;
       throw err;
     }
-  }
-
-  const facility = await Facility.findByPk(facilityId);
-  if (!facility || !isClinicFacility(facility)) {
-    const err = new Error('Clinic departments can only be managed for clinic facilities');
-    err.statusCode = 400;
-    throw err;
   }
 
   const requestedSet = new Set(requested);
@@ -417,7 +487,7 @@ async function removeDepartments(facilityId, departmentKeys, reason, changedBy) 
       });
       if (!active) {
         await t.rollback();
-        const err = new Error(`${departmentLabel(departmentKey)} is not active at this clinic`);
+        const err = new Error(`${labelForDepartmentKey(departmentKey, facility)} is not active at this ${facilityTypeLabel(facility)}`);
         err.statusCode = 404;
         throw err;
       }
@@ -432,9 +502,9 @@ async function removeDepartments(facilityId, departmentKeys, reason, changedBy) 
         transaction: t,
       });
 
-      for (const cascadeKey of getCascadeRemovals(departmentKey)) {
+      for (const cascadeKey of getCascadeRemovalsForFacility(departmentKey, facility)) {
         if (requestedSet.has(cascadeKey)) continue;
-        const cascadeReason = `${trimmedReason} (auto-removed with ${departmentLabel(departmentKey)}: billing clerks are overseen by the Revenue Office)`;
+        const cascadeReason = `${trimmedReason} (auto-removed with ${labelForDepartmentKey(departmentKey, facility)}: billing clerks are overseen by the Revenue Office)`;
         await deactivateDepartmentIfActive({
           facilityId,
           departmentKey: cascadeKey,
@@ -458,7 +528,8 @@ async function removeDepartment(facilityId, departmentKey, reason, changedBy) {
 }
 
 async function getEmployeeActivityStats(userId, departmentKey, facilityId) {
-  const def = DEPARTMENT_BY_KEY[departmentKey];
+  const facility = await Facility.findByPk(facilityId);
+  const def = departmentByKeyForFacility(facility)[departmentKey];
   const since14d = daysAgo(14);
   const today = startOfToday();
 
@@ -538,8 +609,14 @@ async function getEmployeeActivityStats(userId, departmentKey, facilityId) {
 }
 
 async function getDepartmentDetail(facilityId, departmentKey) {
-  if (!isValidDepartmentKey(departmentKey)) {
-    const err = new Error('Invalid clinic department');
+  const facility = await Facility.findByPk(facilityId);
+  if (!facility) {
+    const err = new Error('Facility not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!isValidDepartmentKeyForFacility(departmentKey, facility)) {
+    const err = new Error(`Invalid ${facilityTypeLabel(facility)} department`);
     err.statusCode = 400;
     throw err;
   }
@@ -548,12 +625,12 @@ async function getDepartmentDetail(facilityId, departmentKey) {
     where: { facility_id: facilityId, department_key: departmentKey, is_active: true },
   });
   if (!active) {
-    const err = new Error('Department not found at this clinic');
+    const err = new Error(`Department not found at this ${facilityTypeLabel(facility)}`);
     err.statusCode = 404;
     throw err;
   }
 
-  const def = DEPARTMENT_BY_KEY[departmentKey];
+  const def = departmentByKeyForFacility(facility)[departmentKey];
   const role = await Role.findOne({ where: { name: departmentKey }, attributes: ['id', 'name', 'display_name'] });
 
   const employees = role
@@ -589,7 +666,7 @@ async function getDepartmentDetail(facilityId, departmentKey) {
 
   return {
     department_key: departmentKey,
-    label: def?.label || departmentLabel(departmentKey),
+    label: def?.label || labelForDepartmentKey(departmentKey, facility),
     activity_mode: def?.activity_mode || 'queue',
     queue_department: def?.queue_department || null,
     employee_count: employees.length,
@@ -613,6 +690,13 @@ module.exports = {
   FOUNDATION_CLINIC_DEPARTMENT_KEYS,
   MINIMAL_CLINIC_TEMPLATE_KEYS,
   FULL_CLINIC_TEMPLATE_KEYS,
+  HOSPITAL_DEPARTMENT_DEFINITIONS,
+  FOUNDATION_HOSPITAL_DEPARTMENT_KEYS,
+  FULL_HOSPITAL_TEMPLATE_KEYS,
+  resolveHospitalTemplateKeys,
+  isFoundationHospitalDepartment,
+  getHospitalRequiredDepartment,
+  getHospitalCascadeRemovals,
   isFoundationDepartment,
   getRequiredDepartment,
   getCascadeRemovals,
@@ -620,6 +704,7 @@ module.exports = {
   seedDepartmentsForFacility,
   getActiveDepartmentKeys,
   getActiveQueueDepartmentsForFacility,
+  getHospitalFrontOfficeRoutingForFacility,
   assertQueueDepartmentActiveAtFacility,
   getFacilityDepartmentsSummary,
   getFacilityDepartmentChangeHistory,

@@ -69,7 +69,7 @@ async function findByPhone(phone, excludePatientId, transaction) {
  * Reject registration/update when national ID or phone already belongs to another patient.
  */
 async function assertUniquePatientIdentifiers(
-  { id_number, phone, excludePatientId },
+  { id_number, phone, excludePatientId, checkPhone = true },
   transaction
 ) {
   const idMatch = await findByNationalId(id_number, excludePatientId, transaction);
@@ -81,6 +81,8 @@ async function assertUniquePatientIdentifiers(
     throw err;
   }
 
+  if (!checkPhone) return;
+
   const phoneMatch = await findByPhone(phone, excludePatientId, transaction);
   if (phoneMatch) {
     const err = new Error(
@@ -91,9 +93,10 @@ async function assertUniquePatientIdentifiers(
   }
 }
 
-function validateNationalIdForRegistration(idNumber) {
+function validateNationalIdForRegistration(idNumber, { required = true } = {}) {
   const normalized = normalizeNationalId(idNumber);
   if (!normalized) {
+    if (!required) return null;
     const err = new Error('National ID is required to register a new patient.');
     err.statusCode = 400;
     throw err;
@@ -106,15 +109,16 @@ function validateNationalIdForRegistration(idNumber) {
   return normalized;
 }
 
-function validatePhoneForRegistration(phone) {
+function validatePhoneForRegistration(phone, { required = true, label = 'Primary phone number' } = {}) {
   const normalized = normalizePhone(phone);
   if (!normalized) {
-    const err = new Error('Primary phone number is required to register a new patient.');
+    if (!required) return null;
+    const err = new Error(`${label} is required to register a new patient.`);
     err.statusCode = 400;
     throw err;
   }
   if (normalized.length < 7) {
-    const err = new Error('Enter a valid primary phone number.');
+    const err = new Error(`Enter a valid ${label.toLowerCase()}.`);
     err.statusCode = 400;
     throw err;
   }

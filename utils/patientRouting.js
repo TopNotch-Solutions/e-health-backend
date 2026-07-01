@@ -4,8 +4,8 @@ const {
   routingLabel,
 } = require('../config/clinicQueueDepartments');
 const {
-  HOSPITAL_FRONT_OFFICE_DEPARTMENT,
   isValidHospitalFrontOfficeRouting,
+  hospitalFrontOfficeRoutingLabel,
 } = require('../config/hospitalFrontOfficeConfig');
 const { isHospitalFacility } = require('../config/clinicRoles');
 const {
@@ -54,11 +54,11 @@ function assertPediatricEligibleForPatient(dateOfBirth, destination) {
 
 /**
  * Resolve queue department and priority from front office intake payload.
- * - Hospital: always nurse (optional emergency priority)
+ * - Hospital: nurse, pharmacy, emergency unit, or outpatient (optional emergency priority)
  * - Clinic immediate_triage → Emergency Unit (priority emergency)
  * - Clinic otherwise → selected routing_destination (required for non-immediate)
  */
-function resolveFrontOfficeRouting(body = {}, { facility } = {}) {
+function resolveFrontOfficeRouting(body = {}, { facility, hospitalFrontOfficeRoutes = [] } = {}) {
   const isEmergency = parseFlag(body.is_emergency);
 
   if (facility && isHospitalFacility(facility)) {
@@ -68,19 +68,21 @@ function resolveFrontOfficeRouting(body = {}, { facility } = {}) {
       throw err;
     }
 
-    const destination = body.routing_destination || HOSPITAL_FRONT_OFFICE_DEPARTMENT;
-    if (!isValidHospitalFrontOfficeRouting(destination)) {
-      const err = new Error('Hospital front office can only route patients to the nurse queue');
+    const allowedRoutes = options.hospitalFrontOfficeRoutes || [];
+    const allowedValues = new Set(allowedRoutes.map((row) => row.value));
+    const destination = body.routing_destination;
+    if (!destination || !allowedValues.has(destination)) {
+      const err = new Error('Select a routing destination before sending the patient to queue');
       err.statusCode = 400;
       throw err;
     }
 
     return {
-      department: HOSPITAL_FRONT_OFFICE_DEPARTMENT,
+      department: destination,
       priority: isEmergency ? 'emergency' : 'normal',
       immediateTriage: false,
       isEmergency,
-      routingLabel: routingLabel(HOSPITAL_FRONT_OFFICE_DEPARTMENT),
+      routingLabel: hospitalFrontOfficeRoutingLabel(destination),
     };
   }
 

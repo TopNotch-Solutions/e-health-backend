@@ -121,17 +121,23 @@ sequelize.authenticate()
   })
   .then(() => {
     console.log('Roles synced from config');
-    const { Facility } = require('./models');
+    const { Facility, FacilityDepartment } = require('./models');
     const { isHospitalFacility } = require('./config/clinicRoles');
-    const { seedHospitalOutpatientDepartments } = require('./services/clinicHospitalTransferService');
+    const {
+      seedDepartmentsForFacility,
+      FULL_HOSPITAL_TEMPLATE_KEYS,
+    } = require('./services/clinicFacilityDepartmentService');
     return Facility.findAll({ where: { type: ['hospital', 'health_center'] } }).then(async (hospitals) => {
       for (const hospital of hospitals.filter(isHospitalFacility)) {
-        await seedHospitalOutpatientDepartments(hospital.id);
+        const count = await FacilityDepartment.count({ where: { facility_id: hospital.id } });
+        if (count === 0) {
+          await seedDepartmentsForFacility(hospital.id, FULL_HOSPITAL_TEMPLATE_KEYS);
+        }
       }
     });
   })
   .then(() => {
-    console.log('Hospital outpatient departments seeded');
+    console.log('Hospital departments seeded where missing');
   })
   .then(() => {
     // Schema changes belong in migrations (`npm run db:migrate`), not sync+alter.

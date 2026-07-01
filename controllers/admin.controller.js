@@ -32,6 +32,13 @@ const {
   addDepartments,
   removeDepartments,
   getDepartmentDetail,
+  HOSPITAL_DEPARTMENT_DEFINITIONS,
+  FOUNDATION_HOSPITAL_DEPARTMENT_KEYS,
+  FULL_HOSPITAL_TEMPLATE_KEYS,
+  isFoundationHospitalDepartment,
+  getHospitalRequiredDepartment,
+  getHospitalCascadeRemovals,
+  resolveHospitalTemplateKeys,
 } = require('../services/clinicFacilityDepartmentService');
 
 function isSystemAdmin(req) {
@@ -411,7 +418,7 @@ exports.getFacilities = async (req, res) => {
     const rows = await Promise.all(facilities.map(async (f) => {
       const plain = f.toJSON();
       let department_count = null;
-      if (plain.type === 'clinic') {
+      if (plain.type === 'clinic' || plain.type === 'hospital' || plain.type === 'health_center') {
         const { FacilityDepartment } = require('../models');
         department_count = await FacilityDepartment.count({
           where: { facility_id: plain.id, is_active: true },
@@ -443,6 +450,7 @@ exports.createFacility = async (req, res) => {
       district,
       phone,
       clinic_template,
+      hospital_template,
       departments,
       template_reason,
     } = req.body;
@@ -496,6 +504,35 @@ exports.createFacility = async (req, res) => {
           }, { transaction: t });
         }
       }
+    } else if (type === 'hospital' || type === 'health_center') {
+      const template = hospital_template || 'full';
+      const keys = resolveHospitalTemplateKeys(template, departments);
+      if (!keys.length) {
+        await t.rollback();
+        return error(res, 'Select at least one hospital department', 400);
+      }
+      const customDiffersFromFull = template === 'custom'
+        && (keys.length !== FULL_HOSPITAL_TEMPLATE_KEYS.length
+          || keys.some((k) => !FULL_HOSPITAL_TEMPLATE_KEYS.includes(k))
+          || FULL_HOSPITAL_TEMPLATE_KEYS.some((k) => !keys.includes(k)));
+      if (customDiffersFromFull && !template_reason?.trim()) {
+        await t.rollback();
+        return error(res, 'A reason is required when removing optional hospital departments', 400);
+      }
+      seededDepartments = await seedDepartmentsForFacility(facility.id, keys, t);
+      if (template === 'custom' && template_reason?.trim()) {
+        const { FacilityDepartmentChange } = require('../models');
+        for (const key of keys) {
+          await FacilityDepartmentChange.create({
+            id: uuidv4(),
+            facility_id: facility.id,
+            department_key: key,
+            action: 'added',
+            reason: template_reason.trim(),
+            changed_by: req.user.id,
+          }, { transaction: t });
+        }
+      }
     }
 
     await t.commit();
@@ -511,6 +548,21 @@ exports.createFacility = async (req, res) => {
     console.error('createFacility error:', err);
     return error(res, err.message || 'Failed to create facility', err.statusCode || 500);
   }
+};
+
+exports.getHospitalDepartmentCatalog = async (req, res) => {
+  return success(res, {
+    foundation_template: FOUNDATION_HOSPITAL_DEPARTMENT_KEYS,
+    full_template: FULL_HOSPITAL_TEMPLATE_KEYS,
+    departments: HOSPITAL_DEPARTMENT_DEFINITIONS.map((d) => ({
+      key: d.key,
+      label: d.label,
+      is_foundation: isFoundationHospitalDepartment(d.key),
+      requires_department: getHospitalRequiredDepartment(d.key),
+      removal_cascades_to: getHospitalCascadeRemovals(d.key),
+      front_office_routable: Boolean(d.front_office_route),
+    })),
+  });
 };
 
 exports.getClinicDepartmentCatalog = async (req, res) => {
@@ -535,7 +587,7 @@ exports.getFacilityDepartments = async (req, res) => {
     return success(res, summary);
   } catch (err) {
     console.error('getFacilityDepartments error:', err);
-    return error(res, 'Failed to load clinic departments', 500);
+    return error(res, err.message || 'Failed to load facility departments', 500);
   }
 };
 
