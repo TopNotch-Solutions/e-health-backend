@@ -68,7 +68,7 @@ function resolveFrontOfficeRouting(body = {}, { facility, hospitalFrontOfficeRou
       throw err;
     }
 
-    const allowedRoutes = options.hospitalFrontOfficeRoutes || [];
+    const allowedRoutes = hospitalFrontOfficeRoutes || [];
     const allowedValues = new Set(allowedRoutes.map((row) => row.value));
     const destination = body.routing_destination;
     if (!destination || !allowedValues.has(destination)) {
