@@ -19,6 +19,7 @@ const {
 const { success, created, error } = require('../utils/response');
 const { getTransferForVisit } = require('../services/clinicHospitalTransferService');
 const queueService = require('../services/queueService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { listStateHospitalFacilities } = require('../services/stateHospitalFacilityService');
 const { getIO } = require('../socket');
 const {
@@ -226,13 +227,6 @@ exports.completeDisposition = async (req, res) => {
         destination: targetFacility.name,
         status: 'pending',
       }, { transaction: t });
-
-      await visit.update({
-        status: 'completed',
-        completed_at: new Date(),
-        current_department: null,
-        current_queue_position: null,
-      }, { transaction: t });
     } else if (disposition === 'mortuary') {
       const validationError = validateMortuary({ cause_of_death, date_of_death });
       if (validationError) {
@@ -264,6 +258,26 @@ exports.completeDisposition = async (req, res) => {
       notes: `Booking room — ${dispositionLabel(disposition)}`,
     }, t);
 
+    let visitEnd = null;
+    if (disposition === 'state_hospital') {
+      visitEnd = await clinicBillingService.applyVisitEndState({
+        visitId: visit_id,
+        facilityId: req.user.facility_id,
+        userId: req.user.id,
+        transaction: t,
+        notes: 'Booking room — referred to state hospital',
+      });
+
+      if (!visitEnd.routedToBilling && !visitEnd.holdVisitOpen) {
+        await visit.update({
+          status: 'completed',
+          completed_at: new Date(),
+          current_department: null,
+          current_queue_position: null,
+        }, { transaction: t });
+      }
+    }
+
     await t.commit();
 
     const io = getIO();
@@ -281,10 +295,16 @@ exports.completeDisposition = async (req, res) => {
     return created(res, {
       disposition,
       mortuaryRecord,
-      visitCompleted: true,
-    }, disposition === 'mortuary'
-      ? 'Patient processed to Mortuary'
-      : 'Patient referred to state hospital');
+      visitCompleted: disposition !== 'state_hospital' || !visitEnd?.routedToBilling,
+      routedToBilling: Boolean(visitEnd?.routedToBilling),
+      queueEntry: visitEnd?.queueEntry || null,
+      bill: visitEnd?.bill || null,
+      total_amount: visitEnd?.total_amount || null,
+    }, visitEnd?.routedToBilling
+      ? 'Patient sent to billing — payment required (cash + EFT)'
+      : disposition === 'mortuary'
+        ? 'Patient processed to Mortuary'
+        : 'Patient referred to state hospital');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('Booking room disposition error:', err);

@@ -263,6 +263,22 @@ async function completeEntry(entryId, { nextDepartment, nextPriority, notes, pus
       completed_at: new Date(),
     }, { transaction: t });
 
+    const visitForCharge = await Visit.findByPk(entry.visit_id, { transaction: t });
+    if (visitForCharge?.facility_id) {
+      try {
+        const billingChargeService = require('./billingChargeService');
+        await billingChargeService.chargeDepartmentVisit(
+          entry.visit_id,
+          entry.department,
+          visitForCharge.facility_id,
+          entry.id,
+          t
+        );
+      } catch (billErr) {
+        console.error('Department visit charge error:', billErr.message);
+      }
+    }
+
     let nextEntry = null;
     if (nextDepartment) {
       nextEntry = await pushToQueue({
@@ -276,7 +292,7 @@ async function completeEntry(entryId, { nextDepartment, nextPriority, notes, pus
       const visit = await Visit.findByPk(entry.visit_id, { transaction: t });
       if (visit) {
         const clinicBillingService = require('./clinicBillingService');
-        await clinicBillingService.routePrivatePatientToBilling({
+        await clinicBillingService.applyVisitEndState({
           visitId: entry.visit_id,
           facilityId: visit.facility_id,
           userId: pushed_by,

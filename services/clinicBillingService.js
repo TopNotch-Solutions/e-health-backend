@@ -1,6 +1,6 @@
 const { Op } = require('sequelize');
 const { Facility, Visit, Patient, Bill, QueueEntry } = require('../models');
-const { isClinicFacility } = require('../config/clinicRoles');
+const { isClinicFacility, isHospitalFacility } = require('../config/clinicRoles');
 const billingChargeService = require('./billingChargeService');
 const queueService = require('./queueService');
 const notificationService = require('./notificationService');
@@ -17,6 +17,11 @@ async function isClinicFacilityId(facilityId, transaction) {
   return isClinicFacility(facility);
 }
 
+async function isBillableFacilityId(facilityId, transaction) {
+  const facility = await loadFacility(facilityId, transaction);
+  return isClinicFacility(facility) || isHospitalFacility(facility);
+}
+
 async function countActiveClinicalQueues(visitId, transaction) {
   return QueueEntry.count({
     where: {
@@ -29,7 +34,8 @@ async function countActiveClinicalQueues(visitId, transaction) {
 }
 
 /**
- * After clinical activities, send clinic private patients to billing when nothing else is queued.
+ * After clinical activities, send private patients to billing when nothing else is queued.
+ * Applies at both clinic and hospital facilities.
  */
 async function routePrivatePatientToBilling({
   visitId,
@@ -47,8 +53,8 @@ async function routePrivatePatientToBilling({
   }
 
   const resolvedFacilityId = facilityId || visit.facility_id;
-  if (!(await isClinicFacilityId(resolvedFacilityId, transaction))) {
-    return { routed: false, reason: 'not_clinic' };
+  if (!(await isBillableFacilityId(resolvedFacilityId, transaction))) {
+    return { routed: false, reason: 'not_billable_facility' };
   }
 
   if (visit.patient?.payment_type !== 'private') {
@@ -80,7 +86,7 @@ async function routePrivatePatientToBilling({
       department: 'billing',
       priority: 'normal',
       pushed_by: userId,
-      notes: notes || 'Clinic private patient — settlement required',
+      notes: notes || 'Private patient — settlement required',
     },
     transaction
   );
@@ -100,7 +106,7 @@ async function routePrivatePatientToBilling({
 }
 
 /**
- * Complete a clinic visit or hold it open for billing (private patients).
+ * Complete a visit or hold it open for billing (private patients at clinic or hospital).
  */
 async function applyVisitEndState({ visitId, facilityId, userId, transaction, notes }) {
   const routed = await routePrivatePatientToBilling({
@@ -138,6 +144,7 @@ async function applyVisitEndState({ visitId, facilityId, userId, transaction, no
 
 module.exports = {
   isClinicFacilityId,
+  isBillableFacilityId,
   routePrivatePatientToBilling,
   applyVisitEndState,
   countActiveClinicalQueues,

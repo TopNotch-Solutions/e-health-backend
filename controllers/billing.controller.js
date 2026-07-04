@@ -16,6 +16,7 @@ const revenueService = require('../services/revenueService');
 const queueService = require('../services/queueService');
 const notificationService = require('../services/notificationService');
 const { loadBillForFacility, loadVisitForFacility } = require('../services/billingFacilityGuard');
+const { buildBillingReceipt } = require('../services/billingReceiptService');
 
 function paymentTotalsMatch(total, cash, eft) {
   const t = billingChargeService.money(total);
@@ -261,11 +262,23 @@ exports.recordPayment = async (req, res) => {
     }
 
     const paidBill = await Bill.findByPk(bill.id);
-    return success(res, paidBill, 'Payment recorded — patient discharged');
+    const receipt = await buildBillingReceipt(bill.id, req.user.facility_id);
+    return success(res, { bill: paidBill, receipt }, 'Payment recorded — patient discharged');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('Record payment error:', err);
     return error(res, err.message || 'Failed to record payment', err.statusCode || 500);
+  }
+};
+
+exports.getReceipt = async (req, res) => {
+  try {
+    const receipt = await buildBillingReceipt(req.params.id, req.user.facility_id);
+    return success(res, receipt);
+  } catch (err) {
+    if (err.statusCode) return error(res, err.message, err.statusCode);
+    console.error('Get billing receipt error:', err);
+    return error(res, 'Failed to fetch billing receipt', 500);
   }
 };
 

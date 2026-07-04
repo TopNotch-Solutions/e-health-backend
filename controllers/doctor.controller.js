@@ -15,6 +15,7 @@ const { getIO } = require('../socket');
 const { emitDoctorActivity } = require('../services/notificationService');
 const dietPrescriptionService = require('../services/dietPrescriptionService');
 const billingChargeService = require('../services/billingChargeService');
+const clinicBillingService = require('../services/clinicBillingService');
 const { finalizeOutpatientDischarge } = require('../services/visitDischargeService');
 const { applyClinicalTransferPlan } = require('../services/clinicHospitalTransferService');
 const { validateDiagnosis, CLINIC_DOCTOR_DEPARTMENT } = require('../config/clinicDoctorRouting');
@@ -1210,6 +1211,9 @@ exports.dischargePatient = async (req, res) => {
       return success(
         res,
         {
+          visit_id: id,
+          status: 'in_progress',
+          routedToBilling: true,
           queueEntry: result.queueEntry,
           bill: result.bill,
           total_amount: result.total_amount,
@@ -1218,7 +1222,7 @@ exports.dischargePatient = async (req, res) => {
       );
     }
 
-    return success(res, { visit_id: id, status: 'discharged' }, 'Patient discharged');
+    return success(res, { visit_id: id, status: 'discharged', routedToBilling: false }, 'Patient discharged');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('Discharge error:', err);
@@ -1509,6 +1513,14 @@ exports.clinicScheduleFollowUp = async (req, res) => {
       );
     }
 
+    const visitEnd = await clinicBillingService.applyVisitEndState({
+      visitId: visit_id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+      notes: 'Clinic consultation complete — follow-up scheduled',
+    });
+
     await t.commit();
 
     try {
@@ -1538,10 +1550,16 @@ exports.clinicScheduleFollowUp = async (req, res) => {
         prescription: prescriptionResult.prescription,
         queueCompleted: Boolean(queueResult.completedEntry),
         lowStockAlerts: prescriptionResult.lowStockAlerts,
+        routedToBilling: Boolean(visitEnd.routedToBilling),
+        queueEntry: visitEnd.queueEntry || null,
+        bill: visitEnd.bill || null,
+        total_amount: visitEnd.total_amount || null,
       },
-      prescriptionResult.prescription
-        ? 'Prescription sent to pharmacy, follow-up scheduled, consultation completed'
-        : 'Follow-up scheduled and consultation completed'
+      visitEnd.routedToBilling
+        ? 'Patient sent to billing — payment required (cash + EFT)'
+        : prescriptionResult.prescription
+          ? 'Prescription sent to pharmacy, follow-up scheduled, consultation completed'
+          : 'Follow-up scheduled and consultation completed'
     );
   } catch (err) {
     if (!t.finished) await t.rollback();
@@ -1839,6 +1857,7 @@ exports.clinicDischargePatient = async (req, res) => {
         res,
         {
           consultation,
+          routedToBilling: true,
           queueEntry: dischargeResult.queueEntry,
           bill: dischargeResult.bill,
           total_amount: dischargeResult.total_amount,
@@ -1849,7 +1868,7 @@ exports.clinicDischargePatient = async (req, res) => {
 
     return created(
       res,
-      { consultation, status: 'discharged' },
+      { consultation, status: 'discharged', routedToBilling: false },
       'Patient declined care — consultation ended and documented'
     );
   } catch (err) {

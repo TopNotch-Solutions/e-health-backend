@@ -16,6 +16,7 @@ const {
 const notificationService = require('./notificationService');
 const { ADMIT_TRANSPORT_CHECKLIST_OPTIONS } = require('../constants/admitTransportChecklist');
 const {
+  validateSurgicalComplexArrivalRecord,
   validateSurgicalComplexDailyRecord,
   validateSurgicalComplexPorterTransport,
   validateSurgicalComplexMortuaryTransfer,
@@ -288,8 +289,12 @@ function pickVitals(body) {
   };
 }
 
-async function upsertDailyRecordForAdmission({ admission, userId, body, transaction }) {
-  validateSurgicalComplexDailyRecord(body);
+async function upsertDailyRecordForAdmission({ admission, userId, body, transaction, mode = 'ward' }) {
+  if (mode === 'theatre') {
+    validateSurgicalComplexDailyRecord(body);
+  } else {
+    validateSurgicalComplexArrivalRecord(body);
+  }
   const recordDate = normalizeRecordDate(body.record_date);
   const vitals = pickVitals(body);
 

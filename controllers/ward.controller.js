@@ -19,7 +19,7 @@ const surgicalComplexWardService = require('../services/surgicalComplexWardServi
 const specializedInpatientWardService = require('../services/specializedInpatientWardService');
 const adultOutpatientWardService = require('../services/adultOutpatientWardService');
 const { validateIcuDailyRecord } = require('../config/icuWardValidation');
-const { validateSurgicalComplexDailyRecord } = require('../config/surgicalComplexWardValidation');
+const { validateSurgicalComplexArrivalRecord } = require('../config/surgicalComplexWardValidation');
 const { validateSpecializedInpatientDailyRecord } = require('../config/specializedInpatientWardValidation');
 const { validateAdultOutpatientDailyRecord } = require('../config/adultOutpatientWardValidation');
 
@@ -625,15 +625,17 @@ exports.confirmArrival = async (req, res) => {
       });
       icuRecord = icuWardService.formatDailyRecord(saved);
     } else if (admission.bed.ward.ward_type === 'surgical_complex') {
-      const recordBody = req.body.surgical_complex_record || req.body;
-      validateSurgicalComplexDailyRecord(recordBody);
-      const saved = await surgicalComplexWardService.upsertDailyRecordForAdmission({
-        admission,
-        userId: req.user.id,
-        body: recordBody,
-        transaction: t,
-      });
-      surgicalComplexRecord = surgicalComplexWardService.formatDailyRecord(saved);
+      const recordBody = req.body.surgical_complex_record;
+      if (recordBody) {
+        validateSurgicalComplexArrivalRecord(recordBody);
+        const saved = await surgicalComplexWardService.upsertDailyRecordForAdmission({
+          admission,
+          userId: req.user.id,
+          body: recordBody,
+          transaction: t,
+        });
+        surgicalComplexRecord = surgicalComplexWardService.formatDailyRecord(saved);
+      }
     } else if (admission.bed.ward.ward_type === 'specialized_inpatient') {
       const recordBody = req.body.specialized_inpatient_record || req.body;
       validateSpecializedInpatientDailyRecord(recordBody);

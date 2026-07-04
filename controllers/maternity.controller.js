@@ -511,8 +511,9 @@ exports.completeAncSession = async (req, res) => {
       notes: 'ANC session completed',
     }, t);
 
+    let billingResult = { routed: false };
     if (visit.patient?.payment_type === 'private') {
-      await maternityBillingService.routeMaternityPrivateToBilling({
+      billingResult = await maternityBillingService.routeMaternityPrivateToBilling({
         visitId: visit_id,
         facilityId,
         userId,
@@ -524,17 +525,19 @@ exports.completeAncSession = async (req, res) => {
     const episode = await maternityBillingService.getOrCreateEpisode(visit_id, t);
     let discharged = false;
 
-    if (no_further_session_required) {
-      discharged = true;
-      if (episode) {
-        await episode.update({
-          status: 'discharged',
-          discharged_at: new Date(),
-        }, { transaction: t });
+    if (!billingResult.routed) {
+      if (no_further_session_required) {
+        discharged = true;
+        if (episode) {
+          await episode.update({
+            status: 'discharged',
+            discharged_at: new Date(),
+          }, { transaction: t });
+        }
+        await visit.update({ status: 'discharged', current_department: null }, { transaction: t });
+      } else {
+        await visit.update({ status: 'completed', current_department: null }, { transaction: t });
       }
-      await visit.update({ status: 'discharged', current_department: null }, { transaction: t });
-    } else {
-      await visit.update({ status: 'completed', current_department: null }, { transaction: t });
     }
 
     await t.commit();
@@ -544,8 +547,14 @@ exports.completeAncSession = async (req, res) => {
     return success(res, {
       session,
       discharged,
-      visit_status: discharged ? 'discharged' : 'completed',
-    }, discharged ? 'ANC completed — patient discharged' : 'ANC session completed');
+      routedToBilling: Boolean(billingResult.routed),
+      queueEntry: billingResult.queueEntry || null,
+      bill: billingResult.bill || null,
+      total_amount: billingResult.total_amount || null,
+      visit_status: billingResult.routed ? 'in_progress' : (discharged ? 'discharged' : 'completed'),
+    }, billingResult.routed
+      ? 'Patient sent to billing — payment required (cash + EFT)'
+      : discharged ? 'ANC completed — patient discharged' : 'ANC session completed');
   } catch (err) {
     if (!t.finished) await t.rollback();
     return error(res, err.message || 'Failed to complete ANC session', 500);
@@ -780,14 +789,6 @@ exports.signOffPnwDaily = async (req, res) => {
     if (routing_destination === MATERNITY_DEPARTMENTS.ICU) {
       nextDept = routing_destination;
       await episode.update({ current_ward: 'icu' }, { transaction: t });
-    } else if (routing_destination === 'discharge') {
-      await episode.update({
-        status: 'discharged',
-        discharged_at: new Date(),
-        feeding_counselling_done: true,
-        six_week_follow_up_date,
-      }, { transaction: t });
-      await visit.update({ status: 'discharged', current_department: null }, { transaction: t });
     }
 
     await queueService.completeEntry(check.entry.id, {
@@ -796,21 +797,43 @@ exports.signOffPnwDaily = async (req, res) => {
       notes: routing_destination === 'discharge' ? 'PNW discharge' : 'PNW daily sign-off',
     }, t);
 
-    if (routing_destination === 'discharge' && visit.patient?.payment_type === 'private') {
-      await maternityBillingService.routeMaternityPrivateToBilling({
-        visitId: visit_id,
-        facilityId,
-        userId,
-        notes: 'PNW discharge — private patient billing',
-        transaction: t,
-      });
+    let billingResult = { routed: false };
+    if (routing_destination === 'discharge') {
+      if (visit.patient?.payment_type === 'private') {
+        billingResult = await maternityBillingService.routeMaternityPrivateToBilling({
+          visitId: visit_id,
+          facilityId,
+          userId,
+          notes: 'PNW discharge — private patient billing',
+          transaction: t,
+        });
+      }
+
+      if (!billingResult.routed) {
+        await episode.update({
+          status: 'discharged',
+          discharged_at: new Date(),
+          feeding_counselling_done: true,
+          six_week_follow_up_date,
+        }, { transaction: t });
+        await visit.update({ status: 'discharged', current_department: null }, { transaction: t });
+      }
     }
 
     await t.commit();
     await emitQueueRefresh(MATERNITY_DEPARTMENTS.PNW, facilityId);
     if (nextDept) await emitQueueRefresh(nextDept, facilityId);
 
-    return success(res, { record, discharged: routing_destination === 'discharge' }, 'PNW record signed off');
+    return success(res, {
+      record,
+      discharged: routing_destination === 'discharge' && !billingResult.routed,
+      routedToBilling: Boolean(billingResult.routed),
+      queueEntry: billingResult.queueEntry || null,
+      bill: billingResult.bill || null,
+      total_amount: billingResult.total_amount || null,
+    }, billingResult.routed
+      ? 'Patient sent to billing — payment required (cash + EFT)'
+      : 'PNW record signed off');
   } catch (err) {
     if (!t.finished) await t.rollback();
     return error(res, err.message || 'Failed to sign off PNW record', 500);
@@ -896,9 +919,6 @@ exports.signOffIcuDaily = async (req, res) => {
     if (routing_destination === MATERNITY_DEPARTMENTS.ANW) {
       nextDept = routing_destination;
       await episode.update({ current_ward: 'anw' }, { transaction: t });
-    } else if (routing_destination === 'discharge') {
-      await episode.update({ status: 'discharged', discharged_at: new Date() }, { transaction: t });
-      await visit.update({ status: 'discharged', current_department: null }, { transaction: t });
     }
 
     await queueService.completeEntry(check.entry.id, {
@@ -907,21 +927,38 @@ exports.signOffIcuDaily = async (req, res) => {
       notes: routing_destination === 'discharge' ? 'Maternity ICU discharge' : 'ICU daily sign-off',
     }, t);
 
-    if (routing_destination === 'discharge' && visit.patient?.payment_type === 'private') {
-      await maternityBillingService.routeMaternityPrivateToBilling({
-        visitId: visit_id,
-        facilityId,
-        userId,
-        notes: 'Maternity ICU discharge — private patient billing',
-        transaction: t,
-      });
+    let billingResult = { routed: false };
+    if (routing_destination === 'discharge') {
+      if (visit.patient?.payment_type === 'private') {
+        billingResult = await maternityBillingService.routeMaternityPrivateToBilling({
+          visitId: visit_id,
+          facilityId,
+          userId,
+          notes: 'Maternity ICU discharge — private patient billing',
+          transaction: t,
+        });
+      }
+
+      if (!billingResult.routed) {
+        await episode.update({ status: 'discharged', discharged_at: new Date() }, { transaction: t });
+        await visit.update({ status: 'discharged', current_department: null }, { transaction: t });
+      }
     }
 
     await t.commit();
     await emitQueueRefresh(MATERNITY_DEPARTMENTS.ICU, facilityId);
     if (nextDept) await emitQueueRefresh(nextDept, facilityId);
 
-    return success(res, { record, discharged: routing_destination === 'discharge' }, 'ICU record signed off');
+    return success(res, {
+      record,
+      discharged: routing_destination === 'discharge' && !billingResult.routed,
+      routedToBilling: Boolean(billingResult.routed),
+      queueEntry: billingResult.queueEntry || null,
+      bill: billingResult.bill || null,
+      total_amount: billingResult.total_amount || null,
+    }, billingResult.routed
+      ? 'Patient sent to billing — payment required (cash + EFT)'
+      : 'ICU record signed off');
   } catch (err) {
     if (!t.finished) await t.rollback();
     return error(res, err.message || 'Failed to sign off ICU record', 500);

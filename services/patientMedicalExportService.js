@@ -382,4 +382,7 @@ module.exports = {
   loadQueueEntriesByVisit,
   attachQueueEntriesToHistory,
   resolveAttendees,
+  clinicalDetailLines,
+  userName,
+  formatTs,
 };

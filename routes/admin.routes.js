@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const adminController = require('../controllers/admin.controller');
+const adminBillingFeesController = require('../controllers/adminBillingFees.controller');
 const adminPatientRecordsController = require('../controllers/adminPatientRecords.controller');
 const adminTransferTimelineController = require('../controllers/adminTransferTimeline.controller');
 const { authenticate } = require('../middleware/auth');
@@ -47,6 +48,40 @@ router.get(
   adminController.getFacilityDepartmentDetail
 );
 
+router.get(
+  '/billing-prices/national/history',
+  allowRoles('system_admin'),
+  adminBillingFeesController.getNationalBillingFeeHistory
+);
+router.get(
+  '/billing-prices/national',
+  allowRoles('system_admin'),
+  adminBillingFeesController.getNationalBillingFees
+);
+router.put(
+  '/billing-prices/national/:feeKey',
+  allowRoles('system_admin'),
+  auditMiddleware('billing_fee'),
+  adminBillingFeesController.updateNationalBillingFee
+);
+
+router.get(
+  '/facilities/:id/billing-fees/history',
+  allowRoles('system_admin'),
+  adminBillingFeesController.getFacilityBillingFeeHistory
+);
+router.get(
+  '/facilities/:id/billing-fees',
+  allowRoles('system_admin'),
+  adminBillingFeesController.getFacilityBillingFees
+);
+router.put(
+  '/facilities/:id/billing-fees/:feeKey',
+  allowRoles('system_admin'),
+  auditMiddleware('billing_fee'),
+  adminBillingFeesController.updateFacilityBillingFee
+);
+
 // User management
 router.get('/users', authorize('user', 'read'), adminController.getUsers);
 router.post('/users', authorize('user', 'create'), auditMiddleware('user'), adminController.createUser);
@@ -76,6 +111,11 @@ router.get(
   '/patients/:id/medical-history/export',
   allowRoles('system_admin'),
   adminPatientRecordsController.exportMedicalHistory
+);
+router.get(
+  '/patients/:id/medical-card',
+  allowRoles('system_admin'),
+  adminPatientRecordsController.getMedicalCard
 );
 
 // Clinic → hospital transfer timelines (system admin only)

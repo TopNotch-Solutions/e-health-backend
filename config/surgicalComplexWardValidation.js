@@ -39,7 +39,7 @@ function validationFailure(errors) {
   return err;
 }
 
-function validateSurgicalComplexDailyRecord(body = {}) {
+function validateSurgicalComplexBasicVitals(body = {}) {
   const errors = [];
   const add = (field, message) => errors.push({ field, message });
 
@@ -48,13 +48,6 @@ function validateSurgicalComplexDailyRecord(body = {}) {
 
   const spo2 = parseRequiredNumber(body.oxygen_saturation, { min: 0, max: 100, label: 'Oxygen saturation' });
   if (spo2.error) add('oxygen_saturation', spo2.error);
-
-  const pulseOx = parseRequiredNumber(body.pulse_oximetry_spo2, {
-    min: 0,
-    max: 100,
-    label: 'Pulse oximetry (SpO₂)',
-  });
-  if (pulseOx.error) add('pulse_oximetry_spo2', pulseOx.error);
 
   const rr = parseRequiredNumber(body.respiration_rate, { min: 4, max: 80, label: 'Respiration rate' });
   if (rr.error) add('respiration_rate', rr.error);
@@ -80,9 +73,28 @@ function validateSurgicalComplexDailyRecord(body = {}) {
     add('blood_pressure_systolic', 'Systolic blood pressure must be higher than diastolic');
   }
 
+  return errors;
+}
+
+/** Pre-operative ward arrival — basic vitals only (no theatre monitoring). */
+function validateSurgicalComplexArrivalRecord(body = {}) {
+  const errors = validateSurgicalComplexBasicVitals(body);
+  if (errors.length) throw validationFailure(errors);
+}
+
+function validateSurgicalComplexDailyRecord(body = {}) {
+  const errors = validateSurgicalComplexBasicVitals(body);
+
+  const pulseOx = parseRequiredNumber(body.pulse_oximetry_spo2, {
+    min: 0,
+    max: 100,
+    label: 'Pulse oximetry (SpO₂)',
+  });
+  if (pulseOx.error) errors.push({ field: 'pulse_oximetry_spo2', message: pulseOx.error });
+
   for (const [field, label] of SC_DAILY_TEXT_FIELDS) {
     if (!String(body[field] ?? '').trim()) {
-      add(field, `${label} is required`);
+      errors.push({ field, message: `${label} is required` });
     }
   }
 
@@ -166,6 +178,7 @@ function validateSurgicalComplexWardTransfer({ target_ward_type, transport } = {
 
 module.exports = {
   TRANSFER_WARD_TYPES,
+  validateSurgicalComplexArrivalRecord,
   validateSurgicalComplexDailyRecord,
   validateSurgicalComplexPorterTransport,
   validateSurgicalComplexMortuaryTransfer,

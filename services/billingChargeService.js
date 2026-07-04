@@ -19,6 +19,7 @@ const {
   sequelize,
 } = require('../models');
 const { getFeeAmount, FEE_KEYS } = require('./billingFeeService');
+const { isBillableHospitalDepartment, departmentVisitLabel, departmentVisitFeeKey } = require('../config/billingDepartmentFees');
 const { findInventoryForMedication } = require('./pharmacyStockStatus');
 const { isClinicFacility } = require('../config/clinicRoles');
 
@@ -131,6 +132,25 @@ async function chargeAdmissionFee(visitId, facilityId, transaction) {
     description: 'Admission fee',
     amount,
     referenceId: visitId,
+    transaction,
+  });
+}
+
+async function chargeDepartmentVisit(visitId, department, facilityId, queueEntryId, transaction) {
+  if (await usesClinicFlatBilling(facilityId, transaction)) return null;
+  if (!isBillableHospitalDepartment(department)) return null;
+
+  const feeKey = departmentVisitFeeKey(department);
+  const amount = await getFeeAmount(facilityId, feeKey, transaction);
+  if (amount <= 0) return null;
+
+  return addCharge({
+    visitId,
+    facilityId,
+    category: 'department_visit',
+    description: `${departmentVisitLabel(department)} visit`,
+    amount,
+    referenceId: queueEntryId,
     transaction,
   });
 }
@@ -266,6 +286,7 @@ module.exports = {
   isPrivatePatient,
   addCharge,
   chargeAdmissionFee,
+  chargeDepartmentVisit,
   chargeConsultationFee,
   chargeDispensedItem,
   chargePrescriptionItems,

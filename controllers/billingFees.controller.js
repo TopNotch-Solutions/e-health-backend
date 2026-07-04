@@ -1,8 +1,7 @@
 const { success, error } = require('../utils/response');
-const { getAllFees, upsertFee } = require('../services/billingFeeService');
+const { getAllFees, updateFacilityFeeWithHistory } = require('../services/billingFeeService');
 const {
   FEE_LABELS,
-  FEE_SUPERVISOR_ROLE,
   DEFAULT_FEE_AMOUNTS,
 } = require('../constants/billingFees');
 
@@ -15,7 +14,6 @@ exports.getFees = async (req, res) => {
     const enriched = fees.map((row) => ({
       ...row,
       label: FEE_LABELS[row.fee_key] || row.fee_key,
-      supervisor_role: FEE_SUPERVISOR_ROLE[row.fee_key] || null,
       default_amount: DEFAULT_FEE_AMOUNTS[row.fee_key],
     }));
 
@@ -28,8 +26,13 @@ exports.getFees = async (req, res) => {
 
 exports.updateFee = async (req, res) => {
   try {
+    const userRole = req.user.role?.name || req.user.role;
+    if (userRole !== 'system_admin') {
+      return error(res, 'Only system administrators can change facility prices', 403);
+    }
+
     const { feeKey } = req.params;
-    const { amount } = req.body;
+    const { amount, reason } = req.body;
     const facilityId = req.user.facility_id;
 
     if (!facilityId) return error(res, 'Facility context required', 400);
@@ -38,27 +41,16 @@ exports.updateFee = async (req, res) => {
     }
     if (parseFloat(amount) < 0) return error(res, 'Amount cannot be negative', 400);
 
-    const requiredRole = FEE_SUPERVISOR_ROLE[feeKey];
-    const userRole = req.user.role?.name || req.user.role;
-    if (requiredRole && userRole !== requiredRole && userRole !== 'system_admin') {
-      return error(res, 'Your role cannot update this fee', 403);
-    }
-    if (!requiredRole && userRole !== 'system_admin') {
-      return error(res, 'Unknown fee key', 400);
-    }
-
-    const row = await upsertFee(facilityId, feeKey, parseFloat(amount), req.user.id);
-    return success(
-      res,
-      {
-        fee_key: feeKey,
-        amount: parseFloat(row.amount),
-        label: FEE_LABELS[feeKey],
-      },
-      'Fee updated'
-    );
+    const row = await updateFacilityFeeWithHistory({
+      facilityId,
+      feeKey,
+      amount: parseFloat(amount),
+      userId: req.user.id,
+      reason,
+    });
+    return success(res, row, 'Price updated');
   } catch (err) {
     console.error('Update billing fee error:', err);
-    return error(res, 'Failed to update fee', 500);
+    return error(res, err.message || 'Failed to update fee', err.statusCode || 500);
   }
 };

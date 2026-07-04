@@ -11,6 +11,7 @@ const {
   attachQueueStaffToHistory,
   buildMedicalHistoryXlsx,
 } = require('../services/patientMedicalExportService');
+const { buildMedicalCardDocument } = require('../services/patientMedicalCardService');
 
 function isProfileComplete(patient) {
   return Boolean(
@@ -157,5 +158,22 @@ exports.exportMedicalHistory = async (req, res) => {
     if (err.status) return error(res, err.message, err.status);
     console.error('Admin medical export error:', err);
     return error(res, 'Failed to export medical card', 500);
+  }
+};
+
+/** System admin: printable medical card document (all facilities). */
+exports.getMedicalCard = async (req, res) => {
+  try {
+    const visitId = (req.query.visit_id || '').trim() || null;
+    const card = await buildMedicalCardDocument(req.params.id, {
+      facilityId: null,
+      visitId,
+      allFacilities: true,
+    });
+    return success(res, card);
+  } catch (err) {
+    if (err.status) return error(res, err.message, err.status);
+    console.error('Admin medical card error:', err);
+    return error(res, 'Failed to build medical card', 500);
   }
 };

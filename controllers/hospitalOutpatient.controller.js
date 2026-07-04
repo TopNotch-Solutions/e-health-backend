@@ -159,6 +159,16 @@ exports.dischargePatient = async (req, res) => {
       notes: req.body.notes,
       user: req.user,
     });
+    if (result.routedToBilling) {
+      return success(
+        res,
+        {
+          ...result,
+          routedToBilling: true,
+        },
+        'Patient sent to billing — payment required (cash + EFT)'
+      );
+    }
     return success(res, result, 'Consultation completed and patient discharged');
   } catch (err) {
     return error(res, err.message || 'Failed to discharge patient', err.statusCode || 500);

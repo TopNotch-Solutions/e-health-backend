@@ -22,6 +22,9 @@ router.post('/charge', authorize('billing', 'create'), auditMiddleware('billing'
 // Record payment (cash + EFT must equal total)
 router.post('/payment', authorize('billing', 'update'), auditMiddleware('billing'), billingController.recordPayment);
 
+// Printable receipt for a paid bill
+router.get('/receipt/:id', authorize('billing', 'read'), billingController.getReceipt);
+
 // Waive bill
 router.put('/:id/waive', authorize('billing', 'update'), auditMiddleware('billing'), billingController.waiveBill);
 

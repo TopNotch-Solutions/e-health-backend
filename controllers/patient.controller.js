@@ -11,6 +11,7 @@ const { getIO } = require('../socket');
 const queueService = require('../services/queueService');
 const visitService = require('../services/visitService');
 const patientMedicalHistoryService = require('../services/patientMedicalHistoryService');
+const { buildMedicalCardDocument } = require('../services/patientMedicalCardService');
 const { emitFrontOfficeRegistration } = require('../services/notificationService');
 const billingChargeService = require('../services/billingChargeService');
 const { assertCanEditPatientToday } = require('../services/frontOfficeService');
@@ -425,6 +426,22 @@ exports.getClinicalMedicalHistory = async (req, res) => {
   } catch (err) {
     console.error('Get clinical medical history error:', err);
     return error(res, 'Failed to fetch clinical medical history', 500);
+  }
+};
+
+exports.getMedicalCard = async (req, res) => {
+  try {
+    const visitId = (req.query.visit_id || '').trim() || null;
+    const card = await buildMedicalCardDocument(req.params.id, {
+      facilityId: req.user.facility_id,
+      visitId,
+      allFacilities: false,
+    });
+    return success(res, card);
+  } catch (err) {
+    if (err.status) return error(res, err.message, err.status);
+    console.error('Get medical card error:', err);
+    return error(res, 'Failed to build medical card', 500);
   }
 };
 

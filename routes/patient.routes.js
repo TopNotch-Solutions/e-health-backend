@@ -28,6 +28,12 @@ router.get(
   patientController.getClinicalMedicalHistory
 );
 
+router.get(
+  '/:id/medical-card',
+  authorize('patient', 'read'),
+  patientController.getMedicalCard
+);
+
 // Get patient visit history
 router.get('/:id/history', authorize('patient', 'read'), patientController.getHistory);
 
