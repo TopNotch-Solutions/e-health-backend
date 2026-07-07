@@ -18,7 +18,7 @@ const {
   Facility,
   sequelize,
 } = require('../models');
-const { getFeeAmount, FEE_KEYS } = require('./billingFeeService');
+const { getFeeAmount, getSonarBillingIntervalMinutes, FEE_KEYS } = require('./billingFeeService');
 const { isBillableHospitalDepartment, departmentVisitLabel, departmentVisitFeeKey } = require('../config/billingDepartmentFees');
 const { findInventoryForMedication } = require('./pharmacyStockStatus');
 const { isClinicFacility } = require('../config/clinicRoles');
@@ -212,14 +212,16 @@ async function chargeSonarFee(visitId, sonarRequestId, facilityId, transaction) 
   const request = await SonarRequest.findByPk(sonarRequestId, { transaction });
   if (!request) return null;
 
-  let minutes = 30;
+  const intervalMinutes = await getSonarBillingIntervalMinutes(facilityId, transaction);
+
+  let minutes = intervalMinutes;
   if (request.started_at && request.completed_at) {
     minutes = Math.max(
-      30,
+      intervalMinutes,
       Math.ceil((new Date(request.completed_at) - new Date(request.started_at)) / 60000)
     );
   }
-  const blocks = Math.ceil(minutes / 30);
+  const blocks = Math.ceil(minutes / intervalMinutes);
   const rate = await getFeeAmount(facilityId, FEE_KEYS.SONAR_30MIN, transaction);
   const amount = money(blocks * rate);
 
@@ -227,7 +229,7 @@ async function chargeSonarFee(visitId, sonarRequestId, facilityId, transaction) 
     visitId,
     facilityId,
     category: 'sonar',
-    description: `Ultrasound (${blocks} × 30 min) — ${request.scan_type}`,
+    description: `Ultrasound (${blocks} × ${intervalMinutes} min) — ${request.scan_type}`,
     amount,
     referenceId: sonarRequestId,
     transaction,

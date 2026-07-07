@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const {
-  Prescription, PrescriptionItem, Visit, Patient, PharmacyInventory,
+  Prescription, PrescriptionItem, Visit, Patient, Facility, PharmacyInventory,
   StockTransaction, Referral, QueueEntry, sequelize,
 } = require('../models');
 const { Op } = require('sequelize');
@@ -13,23 +13,16 @@ const {
 } = require('../services/pharmacyStockStatus');
 const billingChargeService = require('../services/billingChargeService');
 const queueService = require('../services/queueService');
+const { findOpenPrescriptionsForPharmacyQueue } = require('../services/pharmacyQueueService');
+const {
+  releaseOutOfStockFromPharmacyQueue,
+  findPharmacyQueueEntryForPrescription,
+} = require('../services/pharmacyOutOfStockReleaseService');
 
 // Get pharmacy queue (pending prescriptions)
 exports.getQueue = async (req, res) => {
   try {
-    const prescriptions = await Prescription.findAll({
-      where: { status: { [Op.in]: ['pending', 'partially_dispensed'] } },
-      include: [
-        {
-          association: 'visit',
-          where: { facility_id: req.user.facility_id },
-          include: [{ model: Patient, as: 'patient', attributes: ['id', 'first_name', 'last_name', 'patient_number'] }],
-        },
-        { association: 'items' },
-        { association: 'prescribedBy', attributes: ['id', 'first_name', 'last_name'] },
-      ],
-      order: [['created_at', 'ASC']],
-    });
+    const prescriptions = await findOpenPrescriptionsForPharmacyQueue(req.user.facility_id);
 
     const enriched = await Promise.all(
       prescriptions.map((rx) => enrichPrescription(rx, req.user.facility_id))
@@ -50,7 +43,10 @@ exports.getPrescription = async (req, res) => {
         { association: 'items' },
         {
           association: 'visit',
-          include: [{ model: Patient, as: 'patient' }],
+          include: [
+            { model: Patient, as: 'patient' },
+            { model: Facility, as: 'facility', attributes: ['id', 'name', 'type'] },
+          ],
         },
         { association: 'prescribedBy', attributes: ['id', 'first_name', 'last_name'] },
       ],
@@ -77,7 +73,7 @@ exports.dispense = async (req, res) => {
     }
 
     const prescription = await Prescription.findByPk(id, {
-      include: [{ association: 'items' }],
+      include: [{ association: 'items' }, { association: 'visit' }],
       transaction: t,
     });
     if (!prescription) {
@@ -86,6 +82,7 @@ exports.dispense = async (req, res) => {
     }
 
     let dispensedCount = 0;
+    let anyPendingCouldDispense = false;
 
     for (const dispenseInfo of dispensed_items) {
       const item = prescription.items.find(i => i.id === dispenseInfo.item_id);
@@ -93,19 +90,23 @@ exports.dispense = async (req, res) => {
       // Already fully handled (given or recorded as not given)
       if (item.dispensed_at) continue;
 
-      if (dispenseInfo.is_dispensed) {
-        const stockItem = await findInventoryForMedication(
-          item.medication_name,
-          req.user.facility_id,
-          t
-        );
-        const liveStock = resolveStockStatus({
-          found: !!stockItem,
-          quantityInStock: stockItem?.quantity_in_stock,
-          reorderLevel: stockItem?.reorder_level,
-          requiredQty: item.quantity,
-        });
+      const stockItem = await findInventoryForMedication(
+        item.medication_name,
+        req.user.facility_id,
+        t
+      );
+      const liveStock = resolveStockStatus({
+        found: !!stockItem,
+        quantityInStock: stockItem?.quantity_in_stock,
+        reorderLevel: stockItem?.reorder_level,
+        requiredQty: item.quantity,
+      });
 
+      if (liveStock.can_dispense) {
+        anyPendingCouldDispense = true;
+      }
+
+      if (dispenseInfo.is_dispensed) {
         if (!liveStock.can_dispense) {
           if (!t.finished) await t.rollback();
           return error(
@@ -166,6 +167,15 @@ exports.dispense = async (req, res) => {
       }
     }
 
+    if (dispensedCount === 0 && !anyPendingCouldDispense) {
+      if (!t.finished) await t.rollback();
+      return error(
+        res,
+        'Cannot dispense — all medications are out of stock. Replenish stock before dispensing.',
+        400
+      );
+    }
+
     // Derive status from persisted line items (supports multi-step dispensing)
     const freshItems = await PrescriptionItem.findAll({
       where: { prescription_id: id },
@@ -190,19 +200,21 @@ exports.dispense = async (req, res) => {
 
     await prescription.update({ status: newStatus }, { transaction: t });
 
+    let pharmacyEntryToComplete = null;
     if (reviewedTotal === n && n > 0) {
-      const pharmacyEntry = await queueService.findActiveEntryForVisit(
-        prescription.visit_id,
-        'pharmacy',
+      pharmacyEntryToComplete = await findPharmacyQueueEntryForPrescription(
+        prescription,
+        req.user.facility_id,
         t
       );
-      if (pharmacyEntry) {
-        await queueService.completeEntry(
-          pharmacyEntry.id,
-          { pushed_by: req.user.id, notes: 'Pharmacy dispensing complete' },
-          t
-        );
-      }
+    }
+
+    if (pharmacyEntryToComplete) {
+      await queueService.completeEntry(
+        pharmacyEntryToComplete.id,
+        { pushed_by: req.user.id, notes: 'Pharmacy dispensing complete' },
+        t
+      );
     }
 
     await t.commit();
@@ -234,7 +246,72 @@ exports.dispense = async (req, res) => {
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('Dispense error:', err);
-    return error(res, 'Failed to dispense medications', 500);
+    const statusCode = err.statusCode || 500;
+    const message = err.message || 'Failed to dispense medications';
+    return error(res, message, statusCode);
+  }
+};
+
+// Remove patient from pharmacy queue when all pending medications are out of stock.
+exports.releaseOutOfStock = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const result = await releaseOutOfStockFromPharmacyQueue({
+      prescriptionId: req.params.id,
+      facilityId: req.user.facility_id,
+      userId: req.user.id,
+      transaction: t,
+    });
+
+    await t.commit();
+
+    let message = 'Patient removed from pharmacy queue.';
+    if (result.visit_completed) {
+      message = 'Patient removed from pharmacy queue. Consultation completed.';
+    } else if (result.routed_to_billing) {
+      message = 'Patient removed from pharmacy queue and sent to billing.';
+    } else if (result.hold_visit_open) {
+      message = 'Patient removed from pharmacy queue. Visit continues at other departments.';
+    }
+
+    return success(res, result, message);
+  } catch (err) {
+    if (!t.finished) await t.rollback();
+    console.error('Release out-of-stock error:', err);
+    const statusCode = err.statusCode || 500;
+    return error(res, err.message || 'Failed to release patient from pharmacy queue', statusCode);
+  }
+};
+
+// Stop a recurring medication schedule (patient is better / no longer needed)
+exports.stopRecurringSchedule = async (req, res) => {
+  try {
+    const item = await PrescriptionItem.findByPk(req.params.itemId);
+    if (!item) return error(res, 'Prescription item not found', 404);
+
+    if (item.schedule_type === 'once_off') {
+      return error(res, 'This medication is not on a recurring schedule', 400);
+    }
+    if (!item.schedule_active) {
+      return error(res, 'Recurring schedule is already stopped', 400);
+    }
+
+    await item.update({
+      schedule_active: false,
+      schedule_stopped_at: new Date(),
+      schedule_stopped_by: req.user.id,
+    });
+
+    const { formatScheduleLabel } = require('../services/prescriptionScheduleService');
+    const plain = item.toJSON();
+    return success(res, {
+      item_id: item.id,
+      schedule_active: false,
+      schedule_label: formatScheduleLabel(plain),
+    }, 'Recurring schedule stopped');
+  } catch (err) {
+    console.error('Stop recurring schedule error:', err);
+    return error(res, 'Failed to stop recurring schedule', 500);
   }
 };
 

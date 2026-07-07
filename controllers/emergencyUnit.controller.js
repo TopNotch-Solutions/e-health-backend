@@ -12,7 +12,11 @@ const {
 const { success, created, error } = require('../utils/response');
 const queueService = require('../services/queueService');
 const { applyClinicalTransferPlan } = require('../services/clinicHospitalTransferService');
-const { pushPrescriptionToPharmacy } = require('../services/clinicPrescriptionService');
+const { pushPrescriptionToPharmacy,
+  applyVisitEndAfterSkippedPharmacy,
+  buildSkippedPharmacyApiFields,
+  skippedPharmacyResponseMessage,
+} = require('../services/clinicPrescriptionService');
 const { getIO } = require('../socket');
 const {
   EMERGENCY_UNIT_NURSE_DEPARTMENT,
@@ -336,6 +340,17 @@ exports.nurseSubmitAndRoute = async (req, res) => {
       pushed_by: req.user.id,
     }, t);
 
+    let visitEnd = null;
+    if (prescriptionResult.skippedPharmacy) {
+      visitEnd = await applyVisitEndAfterSkippedPharmacy({
+        visitId: visit_id,
+        facilityId: req.user.facility_id,
+        userId: req.user.id,
+        transaction: t,
+        notes: 'Emergency unit nurse — pharmacy skipped (out of stock)',
+      });
+    }
+
     await t.commit();
 
     const io = getIO();
@@ -363,9 +378,13 @@ exports.nurseSubmitAndRoute = async (req, res) => {
       consultation,
       prescription: prescriptionResult.prescription,
       nextEntry: queueResult.nextEntry,
-    }, prescriptionResult.prescription
-      ? 'Interventions recorded — patient routed to Pharmacy'
-      : `Interventions recorded — patient routed to ${routingLabel(next_department)}`);
+      skippedPharmacy: Boolean(prescriptionResult.skippedPharmacy),
+      ...buildSkippedPharmacyApiFields(visitEnd),
+    }, prescriptionResult.skippedPharmacy
+      ? skippedPharmacyResponseMessage(visitEnd)
+      : prescriptionResult.prescription
+        ? 'Interventions recorded — patient routed to Pharmacy'
+        : `Interventions recorded — patient routed to ${routingLabel(next_department)}`);
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('EU nurse submit error:', err);
@@ -481,9 +500,12 @@ exports.doctorTransferBookingRoom = async (req, res) => {
       queueEntry: queueResult.nextEntry,
       transferPlan,
       prescription: prescriptionResult.prescription,
-    }, prescriptionResult.prescription
-      ? 'Assessment saved — prescription to pharmacy, patient sent to Booking Room'
-      : 'Assessment saved — patient transferred to Booking Room');
+      skippedPharmacy: Boolean(prescriptionResult.skippedPharmacy),
+    }, prescriptionResult.skippedPharmacy
+      ? 'Assessment saved — prescription recorded (pharmacy skipped), patient sent to Booking Room'
+      : prescriptionResult.prescription
+        ? 'Assessment saved — prescription to pharmacy, patient sent to Booking Room'
+        : 'Assessment saved — patient transferred to Booking Room');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('EU doctor booking error:', err);
@@ -552,10 +574,23 @@ exports.doctorPrescribePharmacy = async (req, res) => {
         doctorEntry.id,
         {
           pushed_by: req.user.id,
-          notes: notes || 'Emergency unit doctor — prescription to pharmacy',
+          notes: prescriptionResult.skippedPharmacy
+            ? 'Emergency unit doctor — pharmacy skipped (out of stock)'
+            : (notes || 'Emergency unit doctor — prescription to pharmacy'),
         },
         t
       );
+    }
+
+    let visitEnd = null;
+    if (prescriptionResult.skippedPharmacy) {
+      visitEnd = await applyVisitEndAfterSkippedPharmacy({
+        visitId: visit_id,
+        facilityId: req.user.facility_id,
+        userId: req.user.id,
+        transaction: t,
+        notes: 'Emergency unit doctor — pharmacy skipped (out of stock)',
+      });
     }
 
     await t.commit();
@@ -580,7 +615,11 @@ exports.doctorPrescribePharmacy = async (req, res) => {
       consultation,
       prescription: prescriptionResult.prescription,
       queueCompleted: Boolean(queueResult.completedEntry),
-    }, 'Prescription sent to pharmacy — consultation completed');
+      skippedPharmacy: Boolean(prescriptionResult.skippedPharmacy),
+      ...buildSkippedPharmacyApiFields(visitEnd),
+    }, prescriptionResult.skippedPharmacy
+      ? skippedPharmacyResponseMessage(visitEnd)
+      : 'Prescription sent to pharmacy — consultation completed');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('EU doctor pharmacy error:', err);

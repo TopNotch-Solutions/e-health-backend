@@ -4,6 +4,7 @@ const { isClinicFacility, isHospitalFacility } = require('../config/clinicRoles'
 const billingChargeService = require('./billingChargeService');
 const queueService = require('./queueService');
 const notificationService = require('./notificationService');
+const { getActiveQueueDepartmentsForFacility } = require('./clinicFacilityDepartmentService');
 
 const ACTIVE_QUEUE_STATUSES = ['waiting', 'in_progress'];
 
@@ -80,6 +81,16 @@ async function routePrivatePatientToBilling({
     return { routed: false, reason: 'nothing_due', bill };
   }
 
+  const activeQueues = await getActiveQueueDepartmentsForFacility(resolvedFacilityId);
+  if (!activeQueues?.has('billing')) {
+    return {
+      routed: false,
+      reason: 'billing_department_inactive',
+      bill,
+      total_amount: totalDue,
+    };
+  }
+
   const queueEntry = await queueService.pushToQueue(
     {
       visit_id: visitId,
@@ -121,10 +132,15 @@ async function applyVisitEndState({ visitId, facilityId, userId, transaction, no
     return { routedToBilling: true, ...routed };
   }
 
-  if (routed.reason === 'clinical_queues_active' || routed.reason === 'already_in_billing') {
+  if (
+    routed.reason === 'clinical_queues_active'
+    || routed.reason === 'already_in_billing'
+    || routed.reason === 'billing_department_inactive'
+  ) {
     return {
       routedToBilling: routed.reason === 'already_in_billing',
       holdVisitOpen: true,
+      billingBlocked: routed.reason === 'billing_department_inactive',
       ...routed,
     };
   }

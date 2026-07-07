@@ -10,12 +10,19 @@ const { success, created, error } = require('../utils/response');
 const { ADMIT_TRANSPORT_CHECKLIST_OPTIONS } = require('../constants/admitTransportChecklist');
 const queueService = require('../services/queueService');
 const notificationService = require('../services/notificationService');
-const { resolveStockStatus, enrichItemsWithStock } = require('../services/pharmacyStockStatus');
+const { resolveStockStatus, enrichItemsWithStock, allPrescriptionItemsOutOfStock } = require('../services/pharmacyStockStatus');
+const { validateScheduleFields } = require('../services/prescriptionScheduleService');
 const { getIO } = require('../socket');
 const { emitDoctorActivity } = require('../services/notificationService');
 const dietPrescriptionService = require('../services/dietPrescriptionService');
 const billingChargeService = require('../services/billingChargeService');
 const clinicBillingService = require('../services/clinicBillingService');
+const {
+  applyVisitEndAfterSkippedPharmacy,
+  buildSkippedPharmacyApiFields,
+  skippedPharmacyResponseMessage,
+  PHARMACY_SKIP_NOTE,
+} = require('../services/clinicPrescriptionService');
 const { finalizeOutpatientDischarge } = require('../services/visitDischargeService');
 const { applyClinicalTransferPlan } = require('../services/clinicHospitalTransferService');
 const { validateDiagnosis, CLINIC_DOCTOR_DEPARTMENT } = require('../config/clinicDoctorRouting');
@@ -114,6 +121,8 @@ async function createPrescriptionWithItems({
       requiredQty: item.quantity || 1,
     });
 
+    const schedule = validateScheduleFields(item, { medicationName: item.medication_name });
+
     const prescItem = await PrescriptionItem.create(
       {
         id: uuidv4(),
@@ -126,6 +135,7 @@ async function createPrescriptionWithItems({
         instructions: item.instructions || null,
         stock_at_prescribe: stockLevel,
         is_available: stock.can_dispense,
+        ...schedule,
       },
       { transaction }
     );
@@ -164,7 +174,9 @@ async function createPrescriptionWithItems({
   }
   const lowStockNote = noteParts.length ? noteParts.join(' · ') : null;
 
-  return { prescription, prescriptionItems, lowStockAlerts, lowStockNote };
+  const allOutOfStock = allPrescriptionItemsOutOfStock(prescriptionItems.length, lowStockAlerts);
+
+  return { prescription, prescriptionItems, lowStockAlerts, lowStockNote, allOutOfStock };
 }
 
 // Create prescription (with stock alert)
@@ -197,7 +209,7 @@ exports.createPrescription = async (req, res) => {
       return error(res, 'Consultation does not belong to this visit', 400);
     }
 
-    const { prescription, prescriptionItems, lowStockAlerts, lowStockNote } =
+    const { prescription, prescriptionItems, lowStockAlerts, lowStockNote, allOutOfStock } =
       await createPrescriptionWithItems({
         visit_id,
         consultation_id,
@@ -218,35 +230,52 @@ exports.createPrescription = async (req, res) => {
 
     // Complete consultation queue entry and hand off to pharmacy (single transaction)
     let queueResult = { completedEntry: null, nextEntry: null };
-    let doctorEntry = null;
-    for (const dept of CONSULTATION_QUEUE_DEPARTMENTS) {
-      doctorEntry = await queueService.findActiveEntryForVisit(visit_id, dept, t);
-      if (doctorEntry) break;
-    }
-    if (!doctorEntry && queue_entry_id) {
-      doctorEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+    let visitEnd = null;
+
+    let activeDoctorEntry = await resolveClinicDoctorQueueEntry({
+      visit_id,
+      queue_entry_id,
+      transaction: t,
+    });
+
+    if (!activeDoctorEntry) {
+      let doctorEntry = null;
+      for (const dept of CONSULTATION_QUEUE_DEPARTMENTS) {
+        doctorEntry = await queueService.findActiveEntryForVisit(visit_id, dept, t);
+        if (doctorEntry) break;
+      }
+      if (!doctorEntry && queue_entry_id) {
+        doctorEntry = await QueueEntry.findByPk(queue_entry_id, { transaction: t });
+      }
+
+      activeDoctorEntry =
+        doctorEntry
+        && CONSULTATION_QUEUE_DEPARTMENTS.includes(doctorEntry.department)
+        && ['waiting', 'in_progress'].includes(doctorEntry.status)
+          ? doctorEntry
+          : null;
     }
 
-    const activeDoctorEntry =
-      doctorEntry
-      && CONSULTATION_QUEUE_DEPARTMENTS.includes(doctorEntry.department)
-      && ['waiting', 'in_progress'].includes(doctorEntry.status)
-        ? doctorEntry
-        : null;
+    const pharmacySkipNote = PHARMACY_SKIP_NOTE;
 
     try {
       if (activeDoctorEntry) {
         queueResult = await queueService.completeEntry(
           activeDoctorEntry.id,
-          {
-            nextDepartment: 'pharmacy',
-            nextPriority: priority,
-            notes: lowStockNote,
-            pushed_by: req.user.id,
-          },
+          allOutOfStock
+            ? {
+                pushed_by: req.user.id,
+                notes: pharmacySkipNote,
+              }
+            : {
+                nextDepartment: 'pharmacy',
+                nextPriority: priority,
+                notes: lowStockNote,
+                pushed_by: req.user.id,
+              },
           t
         );
-      } else {
+      } else if (!allOutOfStock) {
         queueResult.nextEntry = await queueService.pushToQueue(
           {
             visit_id,
@@ -257,6 +286,15 @@ exports.createPrescription = async (req, res) => {
           },
           t
         );
+      }
+
+      if (allOutOfStock) {
+        visitEnd = await applyVisitEndAfterSkippedPharmacy({
+          visitId: visit_id,
+          facilityId: req.user.facility_id,
+          userId: req.user.id,
+          transaction: t,
+        });
       }
     } catch (queueErr) {
       if (!t.finished) await t.rollback();
@@ -284,6 +322,15 @@ exports.createPrescription = async (req, res) => {
           status: 'completed',
           department: completedDept,
         });
+        if (completedDept === CLINIC_DOCTOR_DEPARTMENT) {
+          emitClinicDoctorQueueEvents({
+            io,
+            queueResult,
+            nextDepartment: null,
+            pharmacyEntry: null,
+            prescription: allOutOfStock ? prescription : null,
+          });
+        }
       }
       if (queueResult.nextEntry) {
         io.to('room:pharmacy').emit('queue:new_patient', { queueEntry: queueResult.nextEntry });
@@ -291,8 +338,6 @@ exports.createPrescription = async (req, res) => {
           pharmacyEntry: queueResult.nextEntry,
           prescription,
         });
-      } else if (prescription) {
-        emitPharmacistPrescriptionNotification(io, { prescription });
       }
     } catch (emitErr) {
       console.error('Post-prescription notification error:', emitErr.message);
@@ -310,6 +355,10 @@ exports.createPrescription = async (req, res) => {
       action: 'prescription',
     });
 
+    const skippedPharmacyMessage = allOutOfStock
+      ? skippedPharmacyResponseMessage(visitEnd)
+      : 'Prescription sent to pharmacy — consultation completed';
+
     return created(
       res,
       {
@@ -318,8 +367,10 @@ exports.createPrescription = async (req, res) => {
         queueEntry: queueResult.nextEntry,
         doctorQueueCompleted: Boolean(queueResult.completedEntry),
         lowStockAlerts,
+        skippedPharmacy: allOutOfStock,
+        ...buildSkippedPharmacyApiFields(visitEnd),
       },
-      'Prescription sent to pharmacy — consultation completed'
+      skippedPharmacyMessage
     );
   } catch (err) {
     if (!t.finished) await t.rollback();
@@ -471,19 +522,21 @@ exports.createLabOrder = async (req, res) => {
       prescriptionItems = bundle.prescriptionItems;
       lowStockAlerts = bundle.lowStockAlerts;
 
-      const pharmacyPriority = visit.patient?.is_emergency ? 'emergency' : 'normal';
-      const pharmacyNotes = [bundle.lowStockNote, 'Queued with laboratory order'].filter(Boolean).join(' · ');
+      if (!bundle.allOutOfStock) {
+        const pharmacyPriority = visit.patient?.is_emergency ? 'emergency' : 'normal';
+        const pharmacyNotes = [bundle.lowStockNote, 'Queued with laboratory order'].filter(Boolean).join(' · ');
 
-      pharmacyQueueEntry = await queueService.pushToQueue(
-        {
-          visit_id,
-          department: 'pharmacy',
-          priority: pharmacyPriority,
-          pushed_by: req.user.id,
-          notes: pharmacyNotes || null,
-        },
-        t
-      );
+        pharmacyQueueEntry = await queueService.pushToQueue(
+          {
+            visit_id,
+            department: 'pharmacy',
+            priority: pharmacyPriority,
+            pushed_by: req.user.id,
+            notes: pharmacyNotes || null,
+          },
+          t
+        );
+      }
     }
 
     await t.commit();
@@ -816,6 +869,7 @@ exports.completeConsultationRouting = async (req, res) => {
     let prescriptionItems = [];
     let lowStockAlerts = [];
     let lowStockNote = null;
+    let prescriptionAllOutOfStock = false;
 
     if (hasPrescription) {
       const bundle = await createPrescriptionWithItems({
@@ -830,6 +884,7 @@ exports.completeConsultationRouting = async (req, res) => {
       prescriptionItems = bundle.prescriptionItems;
       lowStockAlerts = bundle.lowStockAlerts;
       lowStockNote = bundle.lowStockNote;
+      prescriptionAllOutOfStock = bundle.allOutOfStock;
     }
 
     await billingChargeService.chargeConsultationFee(
@@ -855,28 +910,40 @@ exports.completeConsultationRouting = async (req, res) => {
         ? doctorEntry
         : null;
 
-    const primaryDepartment = hasLab ? 'lab' : hasSonar ? 'sonar' : 'pharmacy';
+    const routePharmacy = hasPrescription && !prescriptionAllOutOfStock;
+    const primaryDepartment = hasLab ? 'lab' : hasSonar ? 'sonar' : (routePharmacy ? 'pharmacy' : null);
     const primaryNotes = hasLab
       ? `Laboratory: ${labRequest.test_type}`
       : hasSonar
         ? `Ultrasound: ${scan_type.trim()}`
-        : lowStockNote;
+        : (prescriptionAllOutOfStock ? 'All medications out of stock — pharmacy skipped' : lowStockNote);
 
     let queueResult = { completedEntry: null, nextEntry: null };
 
     try {
       if (activeDoctorEntry) {
-        queueResult = await queueService.completeEntry(
-          activeDoctorEntry.id,
-          {
-            nextDepartment: primaryDepartment,
-            nextPriority: queuePriority,
-            notes: primaryNotes,
-            pushed_by: req.user.id,
-          },
-          t
-        );
-      } else {
+        if (primaryDepartment) {
+          queueResult = await queueService.completeEntry(
+            activeDoctorEntry.id,
+            {
+              nextDepartment: primaryDepartment,
+              nextPriority: queuePriority,
+              notes: primaryNotes,
+              pushed_by: req.user.id,
+            },
+            t
+          );
+        } else {
+          queueResult = await queueService.completeEntry(
+            activeDoctorEntry.id,
+            {
+              pushed_by: req.user.id,
+              notes: primaryNotes,
+            },
+            t
+          );
+        }
+      } else if (primaryDepartment) {
         queueResult.nextEntry = await queueService.pushToQueue(
           {
             visit_id,
@@ -926,9 +993,19 @@ exports.completeConsultationRouting = async (req, res) => {
       }
     }
 
-    if (hasPrescription && primaryDepartment !== 'pharmacy') {
+    if (routePharmacy && primaryDepartment !== 'pharmacy') {
       const pharmacyNotes = [lowStockNote, 'Queued with consultation routing'].filter(Boolean).join(' · ');
       await pushExtra('pharmacy', pharmacyNotes || null);
+    }
+
+    let visitEnd = null;
+    if (prescriptionAllOutOfStock && hasPrescription && !hasLab && !hasSonar) {
+      visitEnd = await applyVisitEndAfterSkippedPharmacy({
+        visitId: visit_id,
+        facilityId: req.user.facility_id,
+        userId: req.user.id,
+        transaction: t,
+      });
     }
 
     await t.commit();
@@ -995,9 +1072,12 @@ exports.completeConsultationRouting = async (req, res) => {
     }
 
     const destinations = [];
-    if (hasPrescription) destinations.push('pharmacy');
+    if (routePharmacy) destinations.push('pharmacy');
     if (hasLab) destinations.push('laboratory');
     if (hasSonar) destinations.push('ultrasound');
+    if (prescriptionAllOutOfStock && hasPrescription) {
+      destinations.push('pharmacy skipped (out of stock)');
+    }
 
     return created(
       res,
@@ -1007,11 +1087,17 @@ exports.completeConsultationRouting = async (req, res) => {
         prescription,
         prescriptionItems,
         lowStockAlerts,
+        skippedPharmacy: prescriptionAllOutOfStock,
+        ...buildSkippedPharmacyApiFields(visitEnd),
         queueEntry: queueResult.nextEntry,
         extraQueues: extraQueues.map(({ department, entry }) => ({ department, queueEntry: entry })),
         doctorQueueCompleted: Boolean(queueResult.completedEntry),
       },
-      `Consultation completed — patient routed to ${destinations.join(', ')}`
+      prescriptionAllOutOfStock && hasPrescription && !hasLab && !hasSonar
+        ? skippedPharmacyResponseMessage(visitEnd)
+        : destinations.length
+          ? `Consultation completed — patient routed to ${destinations.join(', ')}`
+          : 'Consultation completed'
     );
   } catch (err) {
     if (!t.finished) await t.rollback();
@@ -1412,7 +1498,7 @@ async function applyClinicPrescriptionIfItems({
   });
   const priority = visit?.patient?.is_emergency ? 'emergency' : 'normal';
 
-  const { prescription, lowStockAlerts, lowStockNote } = await createPrescriptionWithItems({
+  const { prescription, lowStockAlerts, lowStockNote, allOutOfStock } = await createPrescriptionWithItems({
     visit_id,
     consultation_id,
     items,
@@ -1428,6 +1514,10 @@ async function applyClinicPrescriptionIfItems({
     transaction
   );
 
+  if (allOutOfStock) {
+    return { prescription, pharmacyEntry: null, lowStockAlerts, skippedPharmacy: true };
+  }
+
   const pharmacyEntry = await queueService.pushToQueue(
     {
       visit_id,
@@ -1439,7 +1529,7 @@ async function applyClinicPrescriptionIfItems({
     transaction
   );
 
-  return { prescription, pharmacyEntry, lowStockAlerts };
+  return { prescription, pharmacyEntry, lowStockAlerts, skippedPharmacy: false };
 }
 
 // Clinic doctor: schedule follow-up and complete consultation
@@ -1550,6 +1640,7 @@ exports.clinicScheduleFollowUp = async (req, res) => {
         prescription: prescriptionResult.prescription,
         queueCompleted: Boolean(queueResult.completedEntry),
         lowStockAlerts: prescriptionResult.lowStockAlerts,
+        skippedPharmacy: Boolean(prescriptionResult.skippedPharmacy),
         routedToBilling: Boolean(visitEnd.routedToBilling),
         queueEntry: visitEnd.queueEntry || null,
         bill: visitEnd.bill || null,
@@ -1557,9 +1648,11 @@ exports.clinicScheduleFollowUp = async (req, res) => {
       },
       visitEnd.routedToBilling
         ? 'Patient sent to billing — payment required (cash + EFT)'
-        : prescriptionResult.prescription
-          ? 'Prescription sent to pharmacy, follow-up scheduled, consultation completed'
-          : 'Follow-up scheduled and consultation completed'
+        : prescriptionResult.skippedPharmacy
+          ? 'Prescription recorded (pharmacy skipped), follow-up scheduled, consultation completed'
+          : prescriptionResult.prescription
+            ? 'Prescription sent to pharmacy, follow-up scheduled, consultation completed'
+            : 'Follow-up scheduled and consultation completed'
     );
   } catch (err) {
     if (!t.finished) await t.rollback();
@@ -1769,10 +1862,13 @@ exports.clinicTransferBookingRoom = async (req, res) => {
         prescription: prescriptionResult.prescription,
         queueCompleted: Boolean(queueResult.completedEntry),
         lowStockAlerts: prescriptionResult.lowStockAlerts,
+        skippedPharmacy: Boolean(prescriptionResult.skippedPharmacy),
       },
-      prescriptionResult.prescription
-        ? 'Prescription sent to pharmacy and patient transferred to Booking Room'
-        : 'Patient transferred to Booking Room'
+      prescriptionResult.skippedPharmacy
+        ? 'Prescription recorded (pharmacy skipped) and patient transferred to Booking Room'
+        : prescriptionResult.prescription
+          ? 'Prescription sent to pharmacy and patient transferred to Booking Room'
+          : 'Patient transferred to Booking Room'
     );
   } catch (err) {
     if (!t.finished) await t.rollback();

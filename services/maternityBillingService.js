@@ -10,11 +10,11 @@ const {
   MaternityEpisode,
 } = require('../models');
 const { isHospitalFacility } = require('../config/clinicRoles');
-const { MATERNITY_TARIFFS } = require('../config/maternityConfig');
+const { MATERNITY_TARIFFS, defaultWardDayTariff } = require('../config/maternityConfig');
 const billingChargeService = require('./billingChargeService');
 const queueService = require('./queueService');
 const notificationService = require('./notificationService');
-const { FEE_KEYS } = require('../constants/billingFees');
+const { FEE_KEYS, maternityWardFeeKey } = require('../constants/billingFees');
 const { getFeeAmount } = require('./billingFeeService');
 
 const ACTIVE_QUEUE_STATUSES = ['waiting', 'in_progress'];
@@ -93,30 +93,33 @@ async function chargeFrontOfficeVisit({ visitId, facilityId, transaction }) {
 }
 
 /**
- * Charge private patient for one ward day (ANW, PNW, or ICU — 500 NAD default).
+ * Charge private patient for one ward day (ANW, PNW, or ICU — per-ward tariff).
  */
 async function chargeWardDay({ visitId, facilityId, ward, recordDate, transaction }) {
+  const wardKey = String(ward || '').toLowerCase();
+  const feeKey = maternityWardFeeKey(wardKey);
   const amount = await getFeeAmount(
     facilityId,
-    FEE_KEYS.MATERNITY_WARD_DAILY,
+    feeKey,
     transaction
-  ).catch(() => MATERNITY_TARIFFS.WARD_DAY);
+  ).catch(() => defaultWardDayTariff(wardKey));
 
   const refDate = recordDate || new Date().toISOString().slice(0, 10);
+  const wardLabel = wardKey.toUpperCase();
   const result = await billingChargeService.addCharge({
     visitId,
     facilityId,
-    category: `maternity_${ward}_daily`,
-    description: `Maternity ${ward.toUpperCase()} ward — daily stay (${refDate})`,
-    amount: amount || MATERNITY_TARIFFS.WARD_DAY,
-    referenceId: `mwd-${visitId}-${ward}-${refDate}`,
+    category: `maternity_${wardKey}_daily`,
+    description: `Maternity ${wardLabel} ward — daily stay (${refDate})`,
+    amount: amount || defaultWardDayTariff(wardKey),
+    referenceId: `mwd-${visitId}-${wardKey}-${refDate}`,
     transaction,
   });
 
   if (result && !result.skipped) {
     const episode = await getOrCreateEpisode(visitId, transaction);
     if (episode) {
-      const dayField = `${ward}_days`;
+      const dayField = `${wardKey}_days`;
       await episode.update(
         { [dayField]: (episode[dayField] || 0) + 1 },
         { transaction }

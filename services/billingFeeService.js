@@ -5,6 +5,8 @@ const {
   FEE_KEYS,
   DEFAULT_FEE_AMOUNTS,
   feeLabel,
+  feeValueKind,
+  normalizeFeeValue,
   feeKeysForNationalScope,
   feeKeysForFacilityOverrides,
 } = require('../constants/billingFees');
@@ -42,10 +44,18 @@ async function getFeeAmount(facilityId, feeKey, transaction) {
   return resolveFeeAmount(facilityId, feeKey, transaction);
 }
 
+async function getSonarBillingIntervalMinutes(facilityId, transaction) {
+  const raw = await getFeeAmount(facilityId, FEE_KEYS.SONAR_BILLING_INTERVAL_MINUTES, transaction);
+  const minutes = Math.round(raw);
+  return minutes >= 1 ? minutes : (DEFAULT_FEE_AMOUNTS[FEE_KEYS.SONAR_BILLING_INTERVAL_MINUTES] || 30);
+}
+
 function formatFeeRow(feeKey, { nationalAmount, overrideAmount, effectiveAmount }) {
+  const kind = feeValueKind(feeKey);
   return {
     fee_key: feeKey,
     label: feeLabel(feeKey),
+    value_kind: kind,
     amount: effectiveAmount,
     national_amount: nationalAmount,
     override_amount: overrideAmount,
@@ -178,7 +188,7 @@ async function updateStoredFeeWithHistory({
   }
 
   const existing = await getStoredAmount(facilityId, feeKey);
-  const newAmount = clearOverride ? null : parseFloat(amount);
+  const newAmount = clearOverride ? null : normalizeFeeValue(feeKey, amount);
 
   if (clearOverride) {
     if (existing == null) {
@@ -201,12 +211,14 @@ async function updateStoredFeeWithHistory({
   }
 
   if (newAmount == null || Number.isNaN(newAmount) || newAmount < 0) {
-    const err = new Error('Valid amount is required');
+    const err = new Error(feeValueKind(feeKey) === 'minutes'
+      ? 'Valid interval in minutes is required'
+      : 'Valid amount is required');
     err.statusCode = 400;
     throw err;
   }
 
-  if (existing != null && Math.abs(existing - newAmount) < 0.005) {
+  if (existing != null && Math.abs(existing - newAmount) < (feeValueKind(feeKey) === 'minutes' ? 0.5 : 0.005)) {
     const err = new Error('New price is the same as the current price');
     err.statusCode = 400;
     throw err;
@@ -287,6 +299,7 @@ async function getFeeChangeHistory(facilityId, { feeKeys, limit = 100 } = {}) {
     id: row.id,
     fee_key: row.fee_key,
     fee_label: feeLabel(row.fee_key),
+    value_kind: feeValueKind(row.fee_key),
     previous_amount: row.previous_amount != null ? parseFloat(row.previous_amount) : null,
     new_amount: parseFloat(row.new_amount),
     reason: row.reason,
@@ -309,6 +322,7 @@ module.exports = {
   FEE_KEYS,
   getNationalFacilityId,
   getFeeAmount,
+  getSonarBillingIntervalMinutes,
   getAllFees,
   getNationalFees,
   getFeesForFacility,

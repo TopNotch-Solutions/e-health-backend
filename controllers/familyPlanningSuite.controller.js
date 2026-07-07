@@ -13,7 +13,11 @@ const queueService = require('../services/queueService');
 const clinicBillingService = require('../services/clinicBillingService');
 const { getIO } = require('../socket');
 const billingChargeService = require('../services/billingChargeService');
-const { createPrescriptionWithItems } = require('../services/clinicPrescriptionService');
+const { createPrescriptionWithItems,
+  applyVisitEndAfterSkippedPharmacy,
+  buildSkippedPharmacyApiFields,
+  skippedPharmacyResponseMessage,
+} = require('../services/clinicPrescriptionService');
 const notificationService = require('../services/notificationService');
 const { emitNurseActivity } = notificationService;
 const {
@@ -367,7 +371,7 @@ exports.routeToPharmacy = async (req, res) => {
     const { record } = saved;
     const consultation = await upsertFamilyPlanningConsultation(record, req.user.id, t);
 
-    const { prescription, lowStockAlerts, lowStockNote } = await createPrescriptionWithItems({
+    const { prescription, lowStockAlerts, lowStockNote, allOutOfStock } = await createPrescriptionWithItems({
       visit_id,
       consultation_id: consultation.id,
       items,
@@ -383,8 +387,6 @@ exports.routeToPharmacy = async (req, res) => {
       t
     );
 
-    await record.update({ routed_to_pharmacy_at: new Date() }, { transaction: t });
-
     const visitWithPatient = await Visit.findByPk(visit_id, {
       include: [{
         association: 'patient',
@@ -398,12 +400,33 @@ exports.routeToPharmacy = async (req, res) => {
         ? 'emergency'
         : 'normal';
 
-    const queueResult = await queueService.completeEntry(queue_entry_id, {
-      nextDepartment: PHARMACY_DEPARTMENT,
-      nextPriority: priority,
-      notes: lowStockNote || 'Family planning prescription',
-      pushed_by: req.user.id,
-    }, t);
+    let queueResult;
+    if (allOutOfStock) {
+      queueResult = await queueService.completeEntry(queue_entry_id, {
+        pushed_by: req.user.id,
+        notes: lowStockNote || 'All medications out of stock — pharmacy skipped',
+      }, t);
+    } else {
+      await record.update({ routed_to_pharmacy_at: new Date() }, { transaction: t });
+
+      queueResult = await queueService.completeEntry(queue_entry_id, {
+        nextDepartment: PHARMACY_DEPARTMENT,
+        nextPriority: priority,
+        notes: lowStockNote || 'Family planning prescription',
+        pushed_by: req.user.id,
+      }, t);
+    }
+
+    let visitEnd = null;
+    if (allOutOfStock) {
+      visitEnd = await applyVisitEndAfterSkippedPharmacy({
+        visitId: visit_id,
+        facilityId: req.user.facility_id,
+        userId: req.user.id,
+        transaction: t,
+        notes: 'Family planning — pharmacy skipped (out of stock)',
+      });
+    }
 
     await t.commit();
 
@@ -449,7 +472,11 @@ exports.routeToPharmacy = async (req, res) => {
       record: serializeRecord(record),
       prescription,
       nextEntry: queueResult.nextEntry,
-    }, 'Prescription sent to pharmacy');
+      skippedPharmacy: allOutOfStock,
+      ...buildSkippedPharmacyApiFields(visitEnd),
+    }, allOutOfStock
+      ? skippedPharmacyResponseMessage(visitEnd)
+      : 'Prescription sent to pharmacy');
   } catch (err) {
     if (!t.finished) await t.rollback();
     console.error('Family planning pharmacy route error:', err);

@@ -14,6 +14,7 @@ const patientMedicalHistoryService = require('../services/patientMedicalHistoryS
 const { buildMedicalCardDocument } = require('../services/patientMedicalCardService');
 const { emitFrontOfficeRegistration } = require('../services/notificationService');
 const billingChargeService = require('../services/billingChargeService');
+const { patientHasPendingMedication, pendingMedicationFlagsForPatients } = require('../services/patientPendingMedicationService');
 const { assertCanEditPatientToday } = require('../services/frontOfficeService');
 const {
   assertUniquePatientIdentifiers,
@@ -30,6 +31,17 @@ const {
 const { isHospitalFacility } = require('../config/clinicRoles');
 const { HOSPITAL_OUTPATIENT_DEPARTMENTS } = require('../config/hospitalOutpatientConfig');
 
+async function assertPharmacyRoutingAllowed(patientId, facilityId, routingDestination, transaction) {
+  if (routingDestination !== 'pharmacy') return;
+  const hasPending = await patientHasPendingMedication(patientId, facilityId, transaction);
+  if (!hasPending) {
+    const err = new Error(
+      'Pharmacy routing is only available when the patient has pending medication to collect'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+}
 // Register new patient (Known or Returning)
 exports.register = async (req, res) => {
   const t = await sequelize.transaction();
@@ -61,6 +73,14 @@ exports.register = async (req, res) => {
       sex,
       date_of_birth,
     }, { facility, hospitalFrontOfficeRoutes });
+
+    if (routing_destination === 'pharmacy') {
+      const err = new Error(
+        'Pharmacy routing is only available when the patient has pending medication to collect'
+      );
+      err.statusCode = 400;
+      throw err;
+    }
 
     const isEmergency = routing.isEmergency;
     let patientCategory = category || 'known';
@@ -331,6 +351,8 @@ exports.search = async (req, res) => {
 
     await visitService.reconcileFacilityStaleVisits(req.user.facility_id);
 
+    const pendingFlags = await pendingMedicationFlagsForPatients(rows.map((p) => p.id));
+
     const patients = await Promise.all(
       rows.map(async (p) => {
         const json = p.toJSON();
@@ -342,6 +364,7 @@ exports.search = async (req, res) => {
           ...json,
           profile_complete: isProfileComplete(p),
           has_active_visit: Boolean(activeVisit),
+          has_pending_medication: pendingFlags.get(p.id) || false,
           active_visit: visitService.serializeActiveVisitSummary(activeVisit, activeQueue),
         };
       })
@@ -575,6 +598,13 @@ exports.createVisit = async (req, res) => {
       sex: patient.sex,
       date_of_birth: patient.date_of_birth,
     }, { facility, hospitalFrontOfficeRoutes });
+
+    await assertPharmacyRoutingAllowed(
+      patient.id,
+      req.user.facility_id,
+      routing_destination,
+      t
+    );
 
     const patientUpdates = { category: 'returning' };
     if (routing.isEmergency) patientUpdates.is_emergency = true;

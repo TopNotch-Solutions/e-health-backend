@@ -83,8 +83,17 @@ const WARD_TYPES = ['anw', 'pnw', 'icu'];
 /** Default maternity tariff amounts (NAD). */
 const MATERNITY_TARIFFS = {
   FRONT_OFFICE_VISIT: 50,
-  WARD_DAY: 500,
+  WARD_DAY_BY_TYPE: {
+    anw: 500,
+    pnw: 500,
+    icu: 500,
+  },
 };
+
+function defaultWardDayTariff(ward) {
+  const key = String(ward || '').toLowerCase();
+  return MATERNITY_TARIFFS.WARD_DAY_BY_TYPE[key] ?? MATERNITY_TARIFFS.WARD_DAY_BY_TYPE.anw;
+}
 
 function departmentLabel(dept) {
   return DEPARTMENT_LABELS[dept] || dept;
@@ -111,6 +120,7 @@ module.exports = {
   MODE_OF_ARRIVAL_OPTIONS,
   WARD_TYPES,
   MATERNITY_TARIFFS,
+  defaultWardDayTariff,
   departmentLabel,
   isMaternityDepartment,
   isMaternityRole,

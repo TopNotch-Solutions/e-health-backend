@@ -44,6 +44,13 @@ function resolveStockStatus({ found, quantityInStock, reorderLevel, requiredQty 
   };
 }
 
+/** True when every line on the prescription is out of stock at the facility. */
+function allPrescriptionItemsOutOfStock(itemCount, lowStockAlerts) {
+  if (!itemCount) return false;
+  const outCount = (lowStockAlerts || []).filter((a) => a.stock_status === 'out_of_stock').length;
+  return outCount === itemCount;
+}
+
 async function findInventoryForMedication(medicationName, facilityId, transaction) {
   return PharmacyInventory.findOne({
     where: {
@@ -54,7 +61,12 @@ async function findInventoryForMedication(medicationName, facilityId, transactio
   });
 }
 
-async function findMedicationAvailabilityElsewhere(medicationName, facilityId, requiredQty = 1) {
+async function findMedicationAvailabilityElsewhere(
+  medicationName,
+  facilityId,
+  requiredQty = 1,
+  transaction = null
+) {
   const need = Math.max(1, Number(requiredQty) || 1);
   const rows = await PharmacyInventory.findAll({
     where: {
@@ -65,11 +77,13 @@ async function findMedicationAvailabilityElsewhere(medicationName, facilityId, r
     include: [{
       model: Facility,
       as: 'facility',
-      attributes: ['id', 'name', 'province', 'district'],
+      attributes: ['id', 'name', 'province', 'district', 'type'],
     }],
     order: [['quantity_in_stock', 'DESC']],
-    limit: 5,
+    transaction,
   });
+
+  const typeOrder = { hospital: 0, clinic: 1, health_center: 2 };
 
   return rows.map((row) => {
     const plain = row.toJSON ? row.toJSON() : row;
@@ -77,9 +91,14 @@ async function findMedicationAvailabilityElsewhere(medicationName, facilityId, r
     return {
       facility_id: plain.facility_id,
       facility_name: plain.facility?.name || 'Another facility',
+      facility_type: plain.facility?.type || null,
       location: location || null,
       quantity_in_stock: plain.quantity_in_stock,
     };
+  }).sort((a, b) => {
+    const typeDiff = (typeOrder[a.facility_type] ?? 9) - (typeOrder[b.facility_type] ?? 9);
+    if (typeDiff !== 0) return typeDiff;
+    return a.facility_name.localeCompare(b.facility_name);
   });
 }
 
@@ -99,7 +118,7 @@ async function enrichItemsWithStock(items, facilityId, transaction) {
 
   const byExactName = new Map(inventoryRows.map((row) => [row.medication_name, row]));
 
-  return items.map((item) => {
+  const enriched = items.map((item) => {
     const plain = item.toJSON ? item.toJSON() : { ...item };
     const inv = byExactName.get(plain.medication_name);
     const live = resolveStockStatus({
@@ -111,11 +130,36 @@ async function enrichItemsWithStock(items, facilityId, transaction) {
 
     return { ...plain, ...live };
   });
+
+  await Promise.all(enriched.map(async (item) => {
+    if (item.stock_status === 'out_of_stock') {
+      item.availability_elsewhere = await findMedicationAvailabilityElsewhere(
+        item.medication_name,
+        facilityId,
+        item.quantity,
+        transaction
+      );
+    } else {
+      item.availability_elsewhere = [];
+    }
+  }));
+
+  return enriched;
 }
 
 async function enrichPrescription(prescription, facilityId, transaction) {
   const plain = prescription.toJSON ? prescription.toJSON() : { ...prescription };
   plain.items = await enrichItemsWithStock(plain.items || [], facilityId, transaction);
+  const { formatScheduleLabel } = require('./prescriptionScheduleService');
+  plain.items = plain.items.map((item) => ({
+    ...item,
+    schedule_label: formatScheduleLabel(item),
+  }));
+  const prescribedAtFacilityId = plain.visit?.facility_id || plain.visit?.facility?.id;
+  plain.is_cross_facility = Boolean(
+    prescribedAtFacilityId && facilityId && prescribedAtFacilityId !== facilityId
+  );
+  plain.prescribed_at_facility = plain.visit?.facility?.name || null;
   return plain;
 }
 
@@ -125,4 +169,5 @@ module.exports = {
   findMedicationAvailabilityElsewhere,
   enrichItemsWithStock,
   enrichPrescription,
+  allPrescriptionItemsOutOfStock,
 };

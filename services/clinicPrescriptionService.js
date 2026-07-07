@@ -2,7 +2,49 @@ const { v4: uuidv4 } = require('uuid');
 const { Visit, Patient, Prescription, PrescriptionItem, PharmacyInventory } = require('../models');
 const queueService = require('./queueService');
 const billingChargeService = require('./billingChargeService');
-const { resolveStockStatus } = require('./pharmacyStockStatus');
+const clinicBillingService = require('./clinicBillingService');
+const { resolveStockStatus, allPrescriptionItemsOutOfStock } = require('./pharmacyStockStatus');
+const { validateScheduleFields, formatScheduleLabel } = require('./prescriptionScheduleService');
+
+const PHARMACY_SKIP_NOTE = 'All medications out of stock — pharmacy skipped';
+
+/**
+ * End visit or route to billing when pharmacy was skipped and there are no more clinical stops.
+ * Safe to call after completeEntry (which may already have attempted this).
+ */
+async function applyVisitEndAfterSkippedPharmacy({
+  visitId,
+  facilityId,
+  userId,
+  transaction,
+  notes = 'Consultation complete — pharmacy skipped (out of stock)',
+}) {
+  return clinicBillingService.applyVisitEndState({
+    visitId,
+    facilityId,
+    userId,
+    transaction,
+    notes,
+  });
+}
+
+function buildSkippedPharmacyApiFields(visitEnd) {
+  return {
+    visitCompleted: Boolean(visitEnd?.visitCompleted),
+    routedToBilling: Boolean(visitEnd?.routedToBilling),
+    billingQueueEntry: visitEnd?.queueEntry || null,
+  };
+}
+
+function skippedPharmacyResponseMessage(visitEnd) {
+  if (visitEnd?.routedToBilling) {
+    return 'Prescription recorded — pharmacy skipped; patient sent to billing';
+  }
+  if (visitEnd?.visitCompleted) {
+    return 'Prescription recorded — pharmacy skipped; consultation completed';
+  }
+  return 'Prescription recorded — pharmacy skipped (all medications out of stock)';
+}
 
 async function createPrescriptionWithItems({
   visit_id,
@@ -42,6 +84,8 @@ async function createPrescriptionWithItems({
       requiredQty: item.quantity || 1,
     });
 
+    const schedule = validateScheduleFields(item, { medicationName: item.medication_name });
+
     const prescItem = await PrescriptionItem.create(
       {
         id: uuidv4(),
@@ -54,6 +98,7 @@ async function createPrescriptionWithItems({
         instructions: item.instructions || null,
         stock_at_prescribe: stockLevel,
         is_available: stock.can_dispense,
+        ...schedule,
       },
       { transaction }
     );
@@ -72,7 +117,9 @@ async function createPrescriptionWithItems({
     ? `Low stock: ${lowStockAlerts.map((a) => a.medication_name).join(', ')}`
     : null;
 
-  return { prescription, prescriptionItems, lowStockAlerts, lowStockNote };
+  const allOutOfStock = allPrescriptionItemsOutOfStock(prescriptionItems.length, lowStockAlerts);
+
+  return { prescription, prescriptionItems, lowStockAlerts, lowStockNote, allOutOfStock };
 }
 
 async function pushPrescriptionToPharmacy({
@@ -94,7 +141,7 @@ async function pushPrescriptionToPharmacy({
     ? 'emergency'
     : 'normal';
 
-  const { prescription, lowStockAlerts, lowStockNote } = await createPrescriptionWithItems({
+  const { prescription, lowStockAlerts, lowStockNote, allOutOfStock } = await createPrescriptionWithItems({
     visit_id,
     consultation_id,
     items,
@@ -110,6 +157,16 @@ async function pushPrescriptionToPharmacy({
     transaction
   );
 
+  if (allOutOfStock) {
+    return {
+      prescription,
+      pharmacyEntry: null,
+      lowStockAlerts,
+      lowStockNote,
+      skippedPharmacy: true,
+    };
+  }
+
   const pharmacyEntry = await queueService.pushToQueue(
     {
       visit_id,
@@ -121,10 +178,15 @@ async function pushPrescriptionToPharmacy({
     transaction
   );
 
-  return { prescription, pharmacyEntry, lowStockAlerts, lowStockNote };
+  return { prescription, pharmacyEntry, lowStockAlerts, lowStockNote, skippedPharmacy: false };
 }
 
 module.exports = {
   createPrescriptionWithItems,
   pushPrescriptionToPharmacy,
+  formatScheduleLabel,
+  PHARMACY_SKIP_NOTE,
+  applyVisitEndAfterSkippedPharmacy,
+  buildSkippedPharmacyApiFields,
+  skippedPharmacyResponseMessage,
 };
